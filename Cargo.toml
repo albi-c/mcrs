@@ -1,0 +1,20 @@
+[package]
+name = "mcrs"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+resolver = "3"
+members = ["gpu"]
+
+[workspace.dependencies]
+bytemuck = "1.24.0"
+vulkanalia = "0.34.0"
+anyhow = "1.0.100"
+
+[dependencies]
+gpu = { path = "gpu" }
+winit = { version = "0.29.15", default-features = false, features = ["x11", "rwh_06"] }
+anyhow = { workspace = true }
+vulkanalia = { workspace = true, features = ["libloading", "window"] }
+log = "0.4.29"
