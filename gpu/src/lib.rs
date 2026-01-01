@@ -10,14 +10,17 @@ use bytemuck::Zeroable;
 use smart_default::SmartDefault;
 use vulkanalia::{vk, Device, Instance, Version};
 use vulkanalia::vk::{DeviceV1_0, KhrSurfaceExtensionInstanceCommands};
-use crate::vulkan::{create_logical_device, find_suitable_device, QueueFamilies, Swapchain};
+use crate::vulkan::{create_framebuffers, create_graphics_pipeline, create_logical_device, create_render_pass, find_suitable_device, QueueFamilies, Swapchain};
 
-pub const VALIDATION_ENABLED: bool = cfg!(debug_assertions);
 pub const VALIDATION_LAYER: vk::ExtensionName = vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
 
 pub fn need_portability_ext(version: Version) -> bool {
     const PORTABILITY_MACOS_VERSION: Version = Version::new(1, 3, 216);
     cfg!(target_os = "macos") && version >= PORTABILITY_MACOS_VERSION
+}
+
+pub fn validation_enabled() -> bool {
+    cfg!(debug_assertions)
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -188,6 +191,19 @@ pub enum QueueType {
     Transfer,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct ColorComponents(u32);
+bitflags! {
+    impl ColorComponents : u32 {
+        const None = 0x0;
+        const R = 0x1;
+        const G = 0x2;
+        const B = 0x4;
+        const A = 0x8;
+        const All = 0xf;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
 pub struct Stencil {
     #[default(Op::Always)]
@@ -236,8 +252,8 @@ pub struct BlendDesc {
     pub src_alpha_factor: Factor,
     #[default(Factor::Zero)]
     pub dst_alpha_factor: Factor,
-    #[default = 0xf]
-    pub color_write_mask: u8,
+    #[default(ColorComponents::All)]
+    pub color_write_mask: ColorComponents,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
@@ -252,20 +268,23 @@ pub struct ColorTarget {
 pub struct RasterDesc<'a> {
     #[default(Topology::TriangleList)]
     pub topology: Topology,
+    #[default = false]
+    pub primitive_restart: bool,
     #[default(Cull::None)]
     pub cull: Cull,
-    #[default = false]
-    pub alpha_to_coverage: bool,
-    #[default = false]
-    pub dual_source_blending: bool,
+    // TODO: DepthStencilDesc
+    // #[default = false]
+    // pub alpha_to_coverage: bool,
+    // #[default = false]
+    // pub dual_source_blending: bool,
     #[default = 1]
     pub sample_count: u8,
-    #[default(Format::None)]
-    pub depth_format: Format,
-    #[default(Format::None)]
-    pub stencil_format: Format,
-    #[default(&[])]
-    pub color_targets: &'a [ColorTarget],
+    // #[default(Format::None)]
+    // pub depth_format: Format,
+    // #[default(Format::None)]
+    // pub stencil_format: Format,
+    // #[default(&[])]
+    // pub color_targets: &'a [ColorTarget],
     pub blend_state: Option<&'a BlendDesc>,
 }
 
@@ -374,8 +393,37 @@ impl<'a> Texture<'a> {
 }
 
 #[derive(Debug)]
-pub struct Pipeline<'a> {
+pub struct RenderPass<'a> {
+    pass: vk::RenderPass,
+    framebuffers: Vec<vk::Framebuffer>,
     gpu: &'a Gpu,
+}
+
+impl<'a> Drop for RenderPass<'a> {
+    fn drop(&mut self) {
+        unsafe {
+            for fb in self.framebuffers.drain(..) {
+                self.gpu.device.destroy_framebuffer(fb, None);
+            }
+            self.gpu.device.destroy_render_pass(self.pass, None);
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Pipeline<'a> {
+    layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
+    gpu: &'a Gpu,
+}
+
+impl<'a> Drop for Pipeline<'a> {
+    fn drop(&mut self) {
+        unsafe {
+            self.gpu.device.destroy_pipeline(self.pipeline, None);
+            self.gpu.device.destroy_pipeline_layout(self.layout, None);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -500,18 +548,17 @@ impl<'a> Semaphore<'a> {
 
 #[derive(Debug)]
 pub struct Gpu {
-    queue_families: QueueFamilies,
-    device: Device,
-    surface: vk::SurfaceKHR,
-    swapchain: Swapchain,
+    pub(crate) queue_families: QueueFamilies,
+    pub(crate) device: Device,
+    pub(crate) surface: vk::SurfaceKHR,
+    pub(crate) swapchain: Swapchain,
 }
 
 impl Gpu {
     pub fn new(instance: &Instance, surface: vk::SurfaceKHR, window_size: (u32, u32)) -> Result<Self> {
-        let (physical_device, queue_families, swapchain_support) = find_suitable_device(
-            instance, surface)?;
+        let (physical_device, queue_families) = find_suitable_device(instance, surface)?;
         let (logical_device, swapchain) = create_logical_device(
-            instance, physical_device, queue_families, swapchain_support, surface, window_size)?;
+            instance, physical_device, queue_families, surface, window_size)?;
         Ok(Self {
             queue_families,
             device: logical_device,
@@ -544,14 +591,23 @@ impl Gpu {
         todo!()
     }
 
-    pub fn create_compute_pipeline(&self, ir: &[u8]) -> Pipeline<'_> {
+    pub fn create_render_pass(&self) -> Result<RenderPass<'_>> {
+        let pass = create_render_pass(self)?;
+        Ok(RenderPass {
+            pass,
+            framebuffers: create_framebuffers(self, pass)?,
+            gpu: self,
+        })
+    }
+
+    pub fn create_compute_pipeline(&self, spirv: &[u8]) -> Pipeline<'_> {
         todo!()
     }
-    pub fn create_graphics_pipeline(&self, vertex_ir: &[u8], pixel_ir: &[u8],
-                                    raster_desc: RasterDesc) -> Pipeline<'_> {
-        todo!()
+    pub fn create_graphics_pipeline(&self, vertex_spirv: &[u8], pixel_spirv: &[u8],
+                                    raster_desc: RasterDesc, render_pass: &RenderPass<'_>) -> Result<Pipeline<'_>> {
+        create_graphics_pipeline(self, vertex_spirv, pixel_spirv, raster_desc, render_pass.pass)
     }
-    pub fn create_graphics_meshlet_pipeline(&self, meshlet_ir: &[u8], pixel_ir: &[u8],
+    pub fn create_graphics_meshlet_pipeline(&self, meshlet_spirv: &[u8], pixel_spirv: &[u8],
                                             raster_desc: RasterDesc) -> Pipeline<'_> {
         todo!()
     }
@@ -563,7 +619,7 @@ impl Gpu {
         todo!()
     }
 
-    pub fn create_queue(&self, ty: QueueType, index: u32) -> Queue<'_> {
+    pub fn get_queue(&self, ty: QueueType, index: u32) -> Queue<'_> {
         let family = match ty {
             QueueType::Graphics => self.queue_families.graphics,
             QueueType::Present => self.queue_families.present,

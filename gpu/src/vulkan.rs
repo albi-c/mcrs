@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 use anyhow::{anyhow, Result};
 use vulkanalia::{vk, Device, Instance};
-use vulkanalia::vk::{Handle, HasBuilder, InstanceV1_0, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
-use crate::{need_portability_ext, VALIDATION_ENABLED, VALIDATION_LAYER};
+use vulkanalia::bytecode::Bytecode;
+use vulkanalia::vk::{DeviceV1_0, Handle, HasBuilder, InstanceV1_0, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
+use crate::{need_portability_ext, validation_enabled, BlendDesc, Cull, Gpu, Pipeline, RasterDesc, Topology, VALIDATION_LAYER};
 
 const FEATURE_REQUIREMENTS: &[(fn(&vk::PhysicalDeviceFeatures) -> vk::Bool32, &str)] = &[
     (|f| f.shader_int64, "shader int64"),
@@ -110,15 +111,45 @@ fn create_swapchain(instance: &Instance, physical_device: vk::PhysicalDevice, su
 
     let swapchain = unsafe { device.create_swapchain_khr(&info, None)? };
 
+    let images = unsafe { device.get_swapchain_images_khr(swapchain)? };
+    let image_views = create_swapchain_image_views(device, &images, surface_format.format)?;
+
     Ok(Swapchain {
         swapchain,
         format: surface_format.format,
         extent,
-        images: unsafe { device.get_swapchain_images_khr(swapchain)? },
+        images,
+        image_views,
     })
 }
 
-fn check_device(instance: &Instance, device: vk::PhysicalDevice, surface: vk::SurfaceKHR) -> Result<(QueueFamilies, SwapchainSupport)> {
+fn create_swapchain_image_views(device: &Device, images: &[vk::Image], format: vk::Format) -> Result<Vec<vk::ImageView>> {
+    let views = images.iter()
+        .map(|i| {
+            let components = vk::ComponentMapping::builder()
+                .r(vk::ComponentSwizzle::IDENTITY)
+                .g(vk::ComponentSwizzle::IDENTITY)
+                .b(vk::ComponentSwizzle::IDENTITY)
+                .a(vk::ComponentSwizzle::IDENTITY);
+            let subresource_range = vk::ImageSubresourceRange::builder()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_mip_level(0)
+                .level_count(1)
+                .base_array_layer(0)
+                .layer_count(1);
+            let info = vk::ImageViewCreateInfo::builder()
+                .image(*i)
+                .view_type(vk::ImageViewType::_2D)
+                .format(format)
+                .components(components)
+                .subresource_range(subresource_range);
+            unsafe { device.create_image_view(&info, None) }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(views)
+}
+
+fn check_device(instance: &Instance, device: vk::PhysicalDevice, surface: vk::SurfaceKHR) -> Result<QueueFamilies> {
     let features = unsafe { instance.get_physical_device_features(device) };
     for (test, msg) in FEATURE_REQUIREMENTS {
         if test(&features) != vk::TRUE {
@@ -156,17 +187,17 @@ fn check_device(instance: &Instance, device: vk::PhysicalDevice, surface: vk::Su
         present,
     };
 
-    Ok((queue_families, swapchain_support))
+    Ok(queue_families)
 }
 
-pub fn find_suitable_device(instance: &Instance, surface: vk::SurfaceKHR) -> Result<(vk::PhysicalDevice, QueueFamilies, SwapchainSupport)> {
+pub fn find_suitable_device(instance: &Instance, surface: vk::SurfaceKHR) -> Result<(vk::PhysicalDevice, QueueFamilies)> {
     let mut devices = unsafe { instance.enumerate_physical_devices()? };
     devices.sort_unstable_by_key(|&device| rank_device(instance, device));
 
     let mut first_error = None;
     for device in devices {
         match check_device(instance, device, surface) {
-            Ok((queue_families, swapchain_support)) => return Ok((device, queue_families, swapchain_support)),
+            Ok(queue_families) => return Ok((device, queue_families)),
             Err(err) => {
                 first_error.get_or_insert(err);
             },
@@ -181,19 +212,23 @@ pub struct Swapchain {
     pub format: vk::Format,
     pub extent: vk::Extent2D,
     pub images: Vec<vk::Image>,
+    pub image_views: Vec<vk::ImageView>,
 }
 
 impl Swapchain {
     pub unsafe fn destroy(&mut self, device: &Device) {
         unsafe {
+            for view in self.image_views.drain(..) {
+                device.destroy_image_view(view, None);
+            }
             device.destroy_swapchain_khr(self.swapchain, None);
         }
     }
 }
 
 pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalDevice,
-                             queue_families: QueueFamilies, swapchain_support: SwapchainSupport,
-                             surface: vk::SurfaceKHR, window_size: (u32, u32)) -> Result<(Device, Swapchain)> {
+                             queue_families: QueueFamilies, surface: vk::SurfaceKHR,
+                             window_size: (u32, u32)) -> Result<(Device, Swapchain)> {
     let unique_indices = HashSet::from([queue_families.graphics, queue_families.present]);
     let queue_priorities = [1.0];
     let queue_infos = unique_indices
@@ -205,7 +240,7 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         })
         .collect::<Vec<_>>();
 
-    let layers = if VALIDATION_ENABLED {
+    let layers = if validation_enabled() {
         vec![VALIDATION_LAYER.as_ptr()]
     } else {
         vec![]
@@ -232,4 +267,206 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
     let swapchain = create_swapchain(instance, physical_device, surface, window_size, queue_families, &device)?;
 
     Ok((device, swapchain))
+}
+
+fn create_shader_module(device: &Device, spirv: &[u8]) -> Result<vk::ShaderModule> {
+    let bytecode = Bytecode::new(spirv)?;
+    let info = vk::ShaderModuleCreateInfo::builder()
+        .code(bytecode.code())
+        .code_size(bytecode.code_size());
+
+    Ok(unsafe { device.create_shader_module(&info, None)? })
+}
+
+fn create_pipeline_stage(stage: vk::ShaderStageFlags, module: vk::ShaderModule) -> vk::PipelineShaderStageCreateInfoBuilder<'static> {
+    vk::PipelineShaderStageCreateInfo::builder()
+        .stage(stage)
+        .module(module)
+        .name(b"main\0")
+}
+
+fn get_topology(topology: Topology) -> vk::PrimitiveTopology {
+    match topology {
+        Topology::PointList => vk::PrimitiveTopology::POINT_LIST,
+        Topology::LineList => vk::PrimitiveTopology::LINE_LIST,
+        Topology::LineStrip => vk::PrimitiveTopology::LINE_STRIP,
+        Topology::TriangleList => vk::PrimitiveTopology::TRIANGLE_LIST,
+        Topology::TriangleStrip => vk::PrimitiveTopology::TRIANGLE_STRIP,
+        Topology::TriangleFan => vk::PrimitiveTopology::TRIANGLE_FAN,
+    }
+}
+
+fn get_cull_mode(cull: Cull) -> vk::CullModeFlags {
+    match cull {
+        Cull::None => vk::CullModeFlags::empty(),
+        Cull::CCW => vk::CullModeFlags::BACK,
+        Cull::CW => vk::CullModeFlags::BACK,
+        Cull::All => vk::CullModeFlags::FRONT_AND_BACK,
+    }
+}
+
+fn get_front_face(cull: Cull) -> vk::FrontFace {
+    match cull {
+        Cull::None => vk::FrontFace::CLOCKWISE,
+        Cull::CCW => vk::FrontFace::CLOCKWISE,
+        Cull::CW => vk::FrontFace::COUNTER_CLOCKWISE,
+        Cull::All => vk::FrontFace::CLOCKWISE,
+    }
+}
+
+fn get_sample_count_flag(count: u8) -> vk::SampleCountFlags {
+    match count {
+        1 => vk::SampleCountFlags::_1,
+        2 => vk::SampleCountFlags::_2,
+        4 => vk::SampleCountFlags::_4,
+        8 => vk::SampleCountFlags::_8,
+        16 => vk::SampleCountFlags::_16,
+        32 => vk::SampleCountFlags::_32,
+        64 => vk::SampleCountFlags::_64,
+        _ => panic!("invalid multisample count")
+    }
+}
+
+fn create_blend_attachment_state(blend_desc: &BlendDesc) -> vk::PipelineColorBlendAttachmentStateBuilder {
+    // TODO: the rest
+    vk::PipelineColorBlendAttachmentState::builder()
+        .color_write_mask(vk::ColorComponentFlags::from_bits(blend_desc.color_write_mask.0).unwrap())
+        .blend_enable(true)
+}
+
+pub fn create_graphics_pipeline<'a>(gpu: &'a Gpu, vertex_spirv: &[u8], pixel_spirv: &[u8],
+                                    raster_desc: RasterDesc<'_>, render_pass: vk::RenderPass) -> Result<Pipeline<'a>> {
+    let vertex_module = create_shader_module(&gpu.device, vertex_spirv)?;
+    let pixel_module = create_shader_module(&gpu.device, pixel_spirv)?;
+
+    let vertex_stage = create_pipeline_stage(vk::ShaderStageFlags::VERTEX, vertex_module);
+    let pixel_stage = create_pipeline_stage(vk::ShaderStageFlags::FRAGMENT, pixel_module);
+
+    let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder();
+
+    let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::builder()
+        .topology(get_topology(raster_desc.topology))
+        .primitive_restart_enable(raster_desc.primitive_restart);
+
+    let viewport = vk::Viewport::builder()
+        .x(0.0)
+        .y(0.0)
+        .width(gpu.swapchain.extent.width as f32)
+        .height(gpu.swapchain.extent.height as f32)
+        .min_depth(0.0)
+        .max_depth(1.0);
+
+    let scissor = vk::Rect2D::builder()
+        .offset(vk::Offset2D { x: 0, y: 0 })
+        .extent(gpu.swapchain.extent);
+
+    let viewports = [viewport];
+    let scissors = [scissor];
+    let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
+        .viewports(&viewports)
+        .scissors(&scissors);
+
+    let rasterization_state = vk::PipelineRasterizationStateCreateInfo::builder()
+        .depth_clamp_enable(false)
+        .rasterizer_discard_enable(false)
+        .polygon_mode(vk::PolygonMode::FILL)
+        .line_width(1.0)
+        .cull_mode(get_cull_mode(raster_desc.cull))
+        .front_face(get_front_face(raster_desc.cull))
+        .depth_bias_enable(false);
+
+    let multisample_state = vk::PipelineMultisampleStateCreateInfo::builder()
+        .sample_shading_enable(true)
+        .rasterization_samples(get_sample_count_flag(raster_desc.sample_count));
+
+    let attachment = if let Some(blend_desc) = raster_desc.blend_state {
+        create_blend_attachment_state(blend_desc)
+    } else {
+        vk::PipelineColorBlendAttachmentState::builder()
+            .color_write_mask(vk::ColorComponentFlags::all())
+            .blend_enable(true)
+    };
+    let attachments = [attachment];
+    let color_blend_state = vk::PipelineColorBlendStateCreateInfo::builder()
+        .logic_op_enable(false)
+        .logic_op(vk::LogicOp::COPY)
+        .attachments(&attachments)
+        .blend_constants([0.0, 0.0, 0.0, 0.0]);
+
+    let layout_info = vk::PipelineLayoutCreateInfo::builder();
+
+    let layout = unsafe { gpu.device.create_pipeline_layout(&layout_info, None)? };
+
+    let stages = [vertex_stage, pixel_stage];
+    let info = vk::GraphicsPipelineCreateInfo::builder()
+        .stages(&stages)
+        .vertex_input_state(&vertex_input_state)
+        .input_assembly_state(&input_assembly_state)
+        .viewport_state(&viewport_state)
+        .rasterization_state(&rasterization_state)
+        .multisample_state(&multisample_state)
+        .color_blend_state(&color_blend_state)
+        .layout(layout)
+        .render_pass(render_pass)
+        .subpass(0);
+
+    let pipeline = unsafe {
+        gpu.device.create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)?.0[0] };
+
+    unsafe {
+        gpu.device.destroy_shader_module(vertex_module, None);
+        gpu.device.destroy_shader_module(pixel_module, None);
+    }
+
+    Ok(Pipeline {
+        layout,
+        pipeline,
+        gpu,
+    })
+}
+
+pub fn create_render_pass(gpu: &Gpu) -> Result<vk::RenderPass> {
+    let color_attachment = vk::AttachmentDescription::builder()
+        .format(gpu.swapchain.format)
+        .samples(vk::SampleCountFlags::_1)
+        .load_op(vk::AttachmentLoadOp::CLEAR)
+        .store_op(vk::AttachmentStoreOp::STORE)
+        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
+        .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
+
+    let color_attachment_ref = vk::AttachmentReference::builder()
+        .attachment(0)
+        .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+
+    let color_attachments = [color_attachment_ref];
+    let subpass = vk::SubpassDescription::builder()
+        .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+        .color_attachments(&color_attachments);
+
+    let attachments = [color_attachment];
+    let subpasses = [subpass];
+    let info = vk::RenderPassCreateInfo::builder()
+        .attachments(&attachments)
+        .subpasses(&subpasses);
+
+    let pass = unsafe { gpu.device.create_render_pass(&info, None)? };
+
+    Ok(pass)
+}
+
+pub fn create_framebuffers(gpu: &Gpu, render_pass: vk::RenderPass) -> Result<Vec<vk::Framebuffer>> {
+    Ok(gpu.swapchain.image_views.iter()
+        .map(|view| {
+            let attachments = [*view];
+            let info = vk::FramebufferCreateInfo::builder()
+                .render_pass(render_pass)
+                .attachments(&attachments)
+                .width(gpu.swapchain.extent.width)
+                .height(gpu.swapchain.extent.height)
+                .layers(1);
+            unsafe { gpu.device.create_framebuffer(&info, None) }
+        })
+        .collect::<Result<Vec<_>, _>>()?)
 }
