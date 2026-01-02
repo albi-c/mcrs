@@ -298,7 +298,7 @@ fn get_topology(topology: Topology) -> vk::PrimitiveTopology {
 
 fn get_cull_mode(cull: Cull) -> vk::CullModeFlags {
     match cull {
-        Cull::None => vk::CullModeFlags::empty(),
+        Cull::None => vk::CullModeFlags::NONE,
         Cull::CCW => vk::CullModeFlags::BACK,
         Cull::CW => vk::CullModeFlags::BACK,
         Cull::All => vk::CullModeFlags::FRONT_AND_BACK,
@@ -384,7 +384,7 @@ pub fn create_graphics_pipeline<'a>(gpu: &'a Gpu, vertex_spirv: &[u8], pixel_spi
     } else {
         vk::PipelineColorBlendAttachmentState::builder()
             .color_write_mask(vk::ColorComponentFlags::all())
-            .blend_enable(true)
+            .blend_enable(false)
     };
     let attachments = [attachment];
     let color_blend_state = vk::PipelineColorBlendStateCreateInfo::builder()
@@ -421,6 +421,7 @@ pub fn create_graphics_pipeline<'a>(gpu: &'a Gpu, vertex_spirv: &[u8], pixel_spi
     Ok(Pipeline {
         layout,
         pipeline,
+        bind_point: vk::PipelineBindPoint::GRAPHICS,
         gpu,
     })
 }
@@ -445,11 +446,21 @@ pub fn create_render_pass(gpu: &Gpu) -> Result<vk::RenderPass> {
         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
         .color_attachments(&color_attachments);
 
+    let dependency = vk::SubpassDependency::builder()
+        .src_subpass(vk::SUBPASS_EXTERNAL)
+        .dst_subpass(0)
+        .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+        .src_access_mask(vk::AccessFlags::empty())
+        .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+        .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
+
     let attachments = [color_attachment];
     let subpasses = [subpass];
+    let dependencies = [dependency];
     let info = vk::RenderPassCreateInfo::builder()
         .attachments(&attachments)
-        .subpasses(&subpasses);
+        .subpasses(&subpasses)
+        .dependencies(&dependencies);
 
     let pass = unsafe { gpu.device.create_render_pass(&info, None)? };
 

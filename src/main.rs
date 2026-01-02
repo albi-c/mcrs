@@ -102,7 +102,6 @@ fn create_instance(window: &Window, entry: &Entry) -> Result<(Instance, Option<v
 }
 
 struct App {
-    // entry: Entry,
     instance: Instance,
     messenger: Option<vk::DebugUtilsMessengerEXT>,
     gpu: Box<gpu::Gpu>,
@@ -117,11 +116,14 @@ impl App {
         let size = window.inner_size();
         let gpu = Box::new(gpu::Gpu::new(&instance, surface, (size.width, size.height))?);
         Ok(Self {
-            // entry,
             instance,
             messenger,
             gpu,
         })
+    }
+
+    fn render(&self, application: &mut Application) -> Result<()> {
+        application.render()
     }
 }
 
@@ -154,7 +156,7 @@ fn main() -> Result<()> {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::RedrawRequested => {
                     if !target.exiting() {
-                        application.render().unwrap();
+                        app.render(&mut application).unwrap();
                     }
                 },
                 WindowEvent::CloseRequested => target.exit(),

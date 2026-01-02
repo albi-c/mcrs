@@ -3,13 +3,12 @@
 mod vulkan;
 
 use std::alloc::Layout;
-use std::marker::PhantomData;
 use anyhow::Result;
 use bitflags::bitflags;
-use bytemuck::Zeroable;
+use bytemuck::{Pod, Zeroable};
 use smart_default::SmartDefault;
 use vulkanalia::{vk, Device, Instance, Version};
-use vulkanalia::vk::{DeviceV1_0, KhrSurfaceExtensionInstanceCommands};
+use vulkanalia::vk::{DeviceV1_0, Handle, HasBuilder, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
 use crate::vulkan::{create_framebuffers, create_graphics_pipeline, create_logical_device, create_render_pass, find_suitable_device, QueueFamilies, Swapchain};
 
 pub const VALIDATION_LAYER: vk::ExtensionName = vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
@@ -321,15 +320,20 @@ pub struct ViewDesc {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(C)]
 pub struct TextureSizeAlign {
     pub size: usize,
     pub align: usize,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(C)]
 pub struct TextureDescriptor {
     pub data: [u64; 4],
 }
+
+unsafe impl Zeroable for TextureDescriptor {}
+unsafe impl Pod for TextureDescriptor {}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct DevicePointer(u64);
@@ -414,6 +418,7 @@ impl<'a> Drop for RenderPass<'a> {
 pub struct Pipeline<'a> {
     layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    bind_point: vk::PipelineBindPoint,
     gpu: &'a Gpu,
 }
 
@@ -439,25 +444,67 @@ pub struct BlendState<'a> {
 #[derive(Debug)]
 pub struct Queue<'a> {
     queue: vk::Queue,
-    pd: PhantomData<&'a Gpu>,
+    command_pool: vk::CommandPool,
+    gpu: &'a Gpu,
 }
 
 impl<'a> Queue<'a> {
-    pub fn start_recording(&self) -> CommandBuffer<'_> {
-        todo!()
+    pub fn create_buffer<'b>(&'b self) -> Result<CommandBuffer<'a>> {
+        let info = vk::CommandBufferAllocateInfo::builder()
+            .command_pool(self.command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+        Ok(CommandBuffer {
+            buffer: unsafe { self.gpu.device.allocate_command_buffers(&info)?[0] },
+            gpu: self.gpu,
+        })
     }
 
-    pub fn submit<'b>(&'b self, buffers: impl IntoIterator<Item = CommandBuffer<'b>>) {
-        todo!()
+    pub fn submit<'b>(&self, buffer: &'b CommandBuffer<'a>, wait_semaphore: &Semaphore<'a>,
+                      signal_semaphore: &Semaphore<'a>) -> Result<()> where 'a: 'b {
+        let wait_semaphores = [wait_semaphore.semaphore];
+        let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let command_buffers = [buffer.buffer];
+        let signal_semaphores = [signal_semaphore.semaphore];
+        let info = vk::SubmitInfo::builder()
+            .wait_semaphores(&wait_semaphores)
+            .wait_dst_stage_mask(&wait_stages)
+            .command_buffers(&command_buffers)
+            .signal_semaphores(&signal_semaphores);
+        unsafe { self.gpu.device.queue_submit(self.queue, &[info], vk::Fence::null())? };
+        Ok(())
+    }
+}
+
+impl<'a> Drop for Queue<'a> {
+    fn drop(&mut self) {
+        unsafe { self.gpu.device.destroy_command_pool(self.command_pool, None); }
     }
 }
 
 #[derive(Debug)]
 pub struct CommandBuffer<'a> {
-    queue: &'a Queue<'a>,
+    buffer: vk::CommandBuffer,
+    gpu: &'a Gpu,
+}
+
+impl<'a> Drop for CommandBuffer<'a> {
+    fn drop(&mut self) {
+        // TODO: destroy
+    }
 }
 
 impl<'a> CommandBuffer<'a> {
+    pub fn begin_recording(&mut self) -> Result<()> {
+        let info = vk::CommandBufferBeginInfo::builder();
+        unsafe { self.gpu.device.begin_command_buffer(self.buffer, &info)? };
+        Ok(())
+    }
+    pub fn end_recording(&mut self) -> Result<()> {
+        unsafe { self.gpu.device.end_command_buffer(self.buffer)? };
+        Ok(())
+    }
+
     pub fn copy(&mut self, dst: DevicePointer, src: DevicePointer) {
         todo!()
     }
@@ -487,7 +534,7 @@ impl<'a> CommandBuffer<'a> {
     }
 
     pub fn set_pipeline(&mut self, pipeline: &Pipeline<'_>) {
-        todo!()
+        unsafe { self.gpu.device.cmd_bind_pipeline(self.buffer, pipeline.bind_point, pipeline.pipeline) };
     }
     pub fn set_depth_stencil_state(&mut self, state: &DepthStencilState<'a>) {
         todo!()
@@ -503,11 +550,30 @@ impl<'a> CommandBuffer<'a> {
         todo!()
     }
 
-    pub fn begin_render_pass(&mut self, desc: &RasterDesc) {
-        todo!()
+    // pub fn begin_render_pass(&mut self, desc: &RasterDesc) {
+    pub fn begin_render_pass(&mut self, pass: &RenderPass<'_>, framebuffer: usize) {
+        let render_area = vk::Rect2D::builder()
+            .offset(vk::Offset2D { x: 0, y: 0 })
+            .extent(self.gpu.swapchain.extent);
+        let color_clear_value = vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            },
+        };
+        let clear_values = [color_clear_value];
+        let info = vk::RenderPassBeginInfo::builder()
+            .render_pass(pass.pass)
+            .framebuffer(pass.framebuffers[framebuffer])
+            .render_area(render_area)
+            .clear_values(&clear_values);
+        unsafe { self.gpu.device.cmd_begin_render_pass(self.buffer, &info, vk::SubpassContents::INLINE) };
     }
     pub fn end_render_pass(&mut self) {
-        todo!()
+        unsafe { self.gpu.device.cmd_end_render_pass(self.buffer) };
+    }
+
+    pub fn draw_instanced(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
+        unsafe { self.gpu.device.cmd_draw(self.buffer, vertex_count, instance_count, first_vertex, first_instance) };
     }
 
     pub fn draw_indexed_instanced(&mut self, vertex_data: DevicePointer, pixel_data: DevicePointer,
@@ -537,7 +603,14 @@ impl<'a> CommandBuffer<'a> {
 
 #[derive(Debug)]
 pub struct Semaphore<'a> {
+    semaphore: vk::Semaphore,
     gpu: &'a Gpu,
+}
+
+impl<'a> Drop for Semaphore<'a> {
+    fn drop(&mut self) {
+        unsafe { self.gpu.device.destroy_semaphore(self.semaphore, None) };
+    }
 }
 
 impl<'a> Semaphore<'a> {
@@ -569,6 +642,7 @@ impl Gpu {
 
     pub unsafe fn destroy(&mut self, instance: &Instance) {
         unsafe {
+            // self.device.device_wait_idle().unwrap();
             self.swapchain.destroy(&self.device);
             self.device.destroy_device(None);
             instance.destroy_surface_khr(self.surface, None);
@@ -619,7 +693,7 @@ impl Gpu {
         todo!()
     }
 
-    pub fn get_queue(&self, ty: QueueType, index: u32) -> Queue<'_> {
+    pub fn create_queue(&self, ty: QueueType, index: u32) -> Result<Queue<'_>> {
         let family = match ty {
             QueueType::Graphics => self.queue_families.graphics,
             QueueType::Present => self.queue_families.present,
@@ -627,13 +701,45 @@ impl Gpu {
         };
         let queue = unsafe { self.device.get_device_queue(family, index) };
 
-        Queue {
+        let pool_info = vk::CommandPoolCreateInfo::builder()
+            .flags(vk::CommandPoolCreateFlags::TRANSIENT)
+            .queue_family_index(family);
+        let command_pool = unsafe { self.device.create_command_pool(&pool_info, None)? };
+
+        Ok(Queue {
             queue,
-            pd: PhantomData,
-        }
+            command_pool,
+            gpu: self,
+        })
     }
 
-    pub fn create_semaphore(&self, value: u64) -> Semaphore<'_> {
-        todo!()
+    // pub fn create_semaphore(&self, value: u64) -> Result<Semaphore<'_>> {
+    pub fn create_semaphore(&self) -> Result<Semaphore<'_>> {
+        let info = vk::SemaphoreCreateInfo::builder();
+        Ok(Semaphore {
+            semaphore: unsafe { self.device.create_semaphore(&info, None) }?,
+            gpu: self,
+        })
+    }
+
+    pub fn next_swapchain_image(&self, image_available_semaphore: &Semaphore<'_>) -> Result<usize> {
+        Ok(unsafe { self.device.acquire_next_image_khr(
+            self.swapchain.swapchain,
+            u64::MAX,
+            image_available_semaphore.semaphore,
+            vk::Fence::null(),
+        )?.0 as usize })
+    }
+
+    pub fn swapchain_present(&self, image_index: usize, present_queue: &Queue<'_>, render_finished_semaphore: &Semaphore<'_>) -> Result<()> {
+        let wait_semaphores = [render_finished_semaphore.semaphore];
+        let swapchains = [self.swapchain.swapchain];
+        let image_indices = [image_index as u32];
+        let info = vk::PresentInfoKHR::builder()
+            .wait_semaphores(&wait_semaphores)
+            .swapchains(&swapchains)
+            .image_indices(&image_indices);
+        unsafe { self.device.queue_present_khr(present_queue.queue, &info)? };
+        Ok(())
     }
 }
