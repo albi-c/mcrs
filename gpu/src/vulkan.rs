@@ -14,6 +14,7 @@ const FEATURE_REQUIREMENTS: &[(fn(&vk::PhysicalDeviceFeatures) -> vk::Bool32, &s
 const EXTENSION_REQUIREMENTS: &[vk::ExtensionName] = &[
     vk::KHR_BUFFER_DEVICE_ADDRESS_EXTENSION.name,
     vk::KHR_SWAPCHAIN_EXTENSION.name,
+    vk::KHR_DYNAMIC_RENDERING_EXTENSION.name,
 ];
 
 #[derive(Debug, Copy, Clone)]
@@ -255,13 +256,20 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         extensions.push(vk::KHR_PORTABILITY_ENUMERATION_EXTENSION.name.as_ptr());
     }
 
-    let features = vk::PhysicalDeviceFeatures::builder();
+    let features = vk::PhysicalDeviceFeatures::builder()
+        .shader_int64(true)
+        .multi_draw_indirect(true)
+        .sampler_anisotropy(true);
+
+    let mut dynamic_rendering = vk::PhysicalDeviceDynamicRenderingFeaturesKHR::builder()
+        .dynamic_rendering(true);
 
     let info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(&queue_infos)
         .enabled_layer_names(&layers)
         .enabled_extension_names(&extensions)
-        .enabled_features(&features);
+        .enabled_features(&features)
+        .push_next(&mut dynamic_rendering);
     let device = unsafe { instance.create_device(physical_device, &info, None)? };
 
     let swapchain = create_swapchain(instance, physical_device, surface, window_size, queue_families, &device)?;
@@ -335,7 +343,7 @@ fn create_blend_attachment_state(blend_desc: &BlendDesc) -> vk::PipelineColorBle
 }
 
 pub fn create_graphics_pipeline<'a>(gpu: &'a Gpu, vertex_spirv: &[u8], pixel_spirv: &[u8],
-                                    raster_desc: RasterDesc<'_>, render_pass: vk::RenderPass) -> Result<Pipeline<'a>> {
+                                    raster_desc: RasterDesc<'_>) -> Result<Pipeline<'a>> {
     let vertex_module = create_shader_module(&gpu.device, vertex_spirv)?;
     let pixel_module = create_shader_module(&gpu.device, pixel_spirv)?;
 
@@ -397,6 +405,10 @@ pub fn create_graphics_pipeline<'a>(gpu: &'a Gpu, vertex_spirv: &[u8], pixel_spi
 
     let layout = unsafe { gpu.device.create_pipeline_layout(&layout_info, None)? };
 
+    let color_attachment_formats = [gpu.swapchain.format];
+    let mut rendering_info = vk::PipelineRenderingCreateInfoKHR::builder()
+        .color_attachment_formats(&color_attachment_formats);
+
     let stages = [vertex_stage, pixel_stage];
     let info = vk::GraphicsPipelineCreateInfo::builder()
         .stages(&stages)
@@ -407,8 +419,7 @@ pub fn create_graphics_pipeline<'a>(gpu: &'a Gpu, vertex_spirv: &[u8], pixel_spi
         .multisample_state(&multisample_state)
         .color_blend_state(&color_blend_state)
         .layout(layout)
-        .render_pass(render_pass)
-        .subpass(0);
+        .push_next(&mut rendering_info);
 
     let pipeline = unsafe {
         gpu.device.create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)?.0[0] };
@@ -424,60 +435,4 @@ pub fn create_graphics_pipeline<'a>(gpu: &'a Gpu, vertex_spirv: &[u8], pixel_spi
         bind_point: vk::PipelineBindPoint::GRAPHICS,
         gpu,
     })
-}
-
-pub fn create_render_pass(gpu: &Gpu) -> Result<vk::RenderPass> {
-    let color_attachment = vk::AttachmentDescription::builder()
-        .format(gpu.swapchain.format)
-        .samples(vk::SampleCountFlags::_1)
-        .load_op(vk::AttachmentLoadOp::CLEAR)
-        .store_op(vk::AttachmentStoreOp::STORE)
-        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-        .initial_layout(vk::ImageLayout::UNDEFINED)
-        .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
-
-    let color_attachment_ref = vk::AttachmentReference::builder()
-        .attachment(0)
-        .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-
-    let color_attachments = [color_attachment_ref];
-    let subpass = vk::SubpassDescription::builder()
-        .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-        .color_attachments(&color_attachments);
-
-    let dependency = vk::SubpassDependency::builder()
-        .src_subpass(vk::SUBPASS_EXTERNAL)
-        .dst_subpass(0)
-        .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-        .src_access_mask(vk::AccessFlags::empty())
-        .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-        .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
-
-    let attachments = [color_attachment];
-    let subpasses = [subpass];
-    let dependencies = [dependency];
-    let info = vk::RenderPassCreateInfo::builder()
-        .attachments(&attachments)
-        .subpasses(&subpasses)
-        .dependencies(&dependencies);
-
-    let pass = unsafe { gpu.device.create_render_pass(&info, None)? };
-
-    Ok(pass)
-}
-
-pub fn create_framebuffers(gpu: &Gpu, render_pass: vk::RenderPass) -> Result<Vec<vk::Framebuffer>> {
-    Ok(gpu.swapchain.image_views.iter()
-        .map(|view| {
-            let attachments = [*view];
-            let info = vk::FramebufferCreateInfo::builder()
-                .render_pass(render_pass)
-                .attachments(&attachments)
-                .width(gpu.swapchain.extent.width)
-                .height(gpu.swapchain.extent.height)
-                .layers(1);
-            unsafe { gpu.device.create_framebuffer(&info, None) }
-        })
-        .collect::<Result<Vec<_>, _>>()?)
 }

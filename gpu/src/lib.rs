@@ -8,8 +8,8 @@ use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use smart_default::SmartDefault;
 use vulkanalia::{vk, Device, Instance, Version};
-use vulkanalia::vk::{DeviceV1_0, Handle, HasBuilder, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
-use crate::vulkan::{create_framebuffers, create_graphics_pipeline, create_logical_device, create_render_pass, find_suitable_device, QueueFamilies, Swapchain};
+use vulkanalia::vk::{DeviceV1_0, Handle, HasBuilder, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
+use crate::vulkan::{create_graphics_pipeline, create_logical_device, find_suitable_device, QueueFamilies, Swapchain};
 
 pub const VALIDATION_LAYER: vk::ExtensionName = vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
 
@@ -396,23 +396,23 @@ impl<'a> Texture<'a> {
     }
 }
 
-#[derive(Debug)]
-pub struct RenderPass<'a> {
-    pass: vk::RenderPass,
-    framebuffers: Vec<vk::Framebuffer>,
-    gpu: &'a Gpu,
-}
-
-impl<'a> Drop for RenderPass<'a> {
-    fn drop(&mut self) {
-        unsafe {
-            for fb in self.framebuffers.drain(..) {
-                self.gpu.device.destroy_framebuffer(fb, None);
-            }
-            self.gpu.device.destroy_render_pass(self.pass, None);
-        }
-    }
-}
+// #[derive(Debug)]
+// pub struct RenderPass<'a> {
+//     pass: vk::RenderPass,
+//     framebuffers: Vec<vk::Framebuffer>,
+//     gpu: &'a Gpu,
+// }
+//
+// impl<'a> Drop for RenderPass<'a> {
+//     fn drop(&mut self) {
+//         unsafe {
+//             for fb in self.framebuffers.drain(..) {
+//                 self.gpu.device.destroy_framebuffer(fb, None);
+//             }
+//             self.gpu.device.destroy_render_pass(self.pass, None);
+//         }
+//     }
+// }
 
 #[derive(Debug)]
 pub struct Pipeline<'a> {
@@ -550,26 +550,73 @@ impl<'a> CommandBuffer<'a> {
         todo!()
     }
 
+    fn image_barrier(&mut self, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout, image: vk::Image) {
+        let subresource_range = vk::ImageSubresourceRange::builder()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .base_mip_level(0)
+            .level_count(1)
+            .base_array_layer(0)
+            .layer_count(1);
+
+        let barrier = vk::ImageMemoryBarrier::builder()
+            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+            .old_layout(old_layout)
+            .new_layout(new_layout)
+            .image(image)
+            .subresource_range(subresource_range);
+
+        let barriers = [barrier];
+        unsafe {
+            self.gpu.device.cmd_pipeline_barrier(
+                self.buffer,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                vk::DependencyFlags::empty(),
+                &[] as &[vk::MemoryBarrier],
+                &[] as &[vk::BufferMemoryBarrier],
+                &barriers,
+            );
+        }
+    }
+
     // pub fn begin_render_pass(&mut self, desc: &RasterDesc) {
-    pub fn begin_render_pass(&mut self, pass: &RenderPass<'_>, framebuffer: usize) {
+    pub fn begin_render_pass(&mut self, framebuffer: usize) {
+        self.image_barrier(
+            vk::ImageLayout::UNDEFINED, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            self.gpu.swapchain.images[framebuffer]);
+
         let render_area = vk::Rect2D::builder()
             .offset(vk::Offset2D { x: 0, y: 0 })
             .extent(self.gpu.swapchain.extent);
+
         let color_clear_value = vk::ClearValue {
             color: vk::ClearColorValue {
                 float32: [0.0, 0.0, 0.0, 1.0],
             },
         };
-        let clear_values = [color_clear_value];
-        let info = vk::RenderPassBeginInfo::builder()
-            .render_pass(pass.pass)
-            .framebuffer(pass.framebuffers[framebuffer])
+
+        let color_attachment = vk::RenderingAttachmentInfoKHR::builder()
+            .image_view(self.gpu.swapchain.image_views[framebuffer])
+            .image_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .clear_value(color_clear_value);
+
+        let color_attachments = [color_attachment];
+        let info = vk::RenderingInfoKHR::builder()
             .render_area(render_area)
-            .clear_values(&clear_values);
-        unsafe { self.gpu.device.cmd_begin_render_pass(self.buffer, &info, vk::SubpassContents::INLINE) };
+            .layer_count(1)
+            .view_mask(0)
+            .color_attachments(&color_attachments);
+
+        unsafe { self.gpu.device.cmd_begin_rendering_khr(self.buffer, &info) };
     }
-    pub fn end_render_pass(&mut self) {
-        unsafe { self.gpu.device.cmd_end_render_pass(self.buffer) };
+    pub fn end_render_pass(&mut self, framebuffer: usize) {
+        unsafe { self.gpu.device.cmd_end_rendering_khr(self.buffer) };
+
+        self.image_barrier(
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR,
+            self.gpu.swapchain.images[framebuffer]);
     }
 
     pub fn draw_instanced(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
@@ -665,21 +712,21 @@ impl Gpu {
         todo!()
     }
 
-    pub fn create_render_pass(&self) -> Result<RenderPass<'_>> {
-        let pass = create_render_pass(self)?;
-        Ok(RenderPass {
-            pass,
-            framebuffers: create_framebuffers(self, pass)?,
-            gpu: self,
-        })
-    }
+    // pub fn create_render_pass(&self) -> Result<RenderPass<'_>> {
+    //     let pass = create_render_pass(self)?;
+    //     Ok(RenderPass {
+    //         pass,
+    //         framebuffers: create_framebuffers(self, pass)?,
+    //         gpu: self,
+    //     })
+    // }
 
     pub fn create_compute_pipeline(&self, spirv: &[u8]) -> Pipeline<'_> {
         todo!()
     }
     pub fn create_graphics_pipeline(&self, vertex_spirv: &[u8], pixel_spirv: &[u8],
-                                    raster_desc: RasterDesc, render_pass: &RenderPass<'_>) -> Result<Pipeline<'_>> {
-        create_graphics_pipeline(self, vertex_spirv, pixel_spirv, raster_desc, render_pass.pass)
+                                    raster_desc: RasterDesc) -> Result<Pipeline<'_>> {
+        create_graphics_pipeline(self, vertex_spirv, pixel_spirv, raster_desc)
     }
     pub fn create_graphics_meshlet_pipeline(&self, meshlet_spirv: &[u8], pixel_spirv: &[u8],
                                             raster_desc: RasterDesc) -> Pipeline<'_> {
