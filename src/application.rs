@@ -2,7 +2,9 @@ use anyhow::Result;
 
 pub struct Application<'a> {
     gpu: &'a gpu::Gpu,
-    pipeline: gpu::Pipeline<'a>,
+    vertex_shader: gpu::Shader<'a>,
+    pixel_shader: gpu::Shader<'a>,
+    // pipeline: gpu::Pipeline<'a>,
     queue: gpu::Queue<'a>,
     command_buffer: gpu::CommandBuffer<'a>,
     present_queue: gpu::Queue<'a>,
@@ -15,13 +17,15 @@ impl<'a> Application<'a> {
         let queue = gpu.create_queue(gpu::QueueType::Graphics, 0)?;
         Ok(Self {
             gpu,
-            pipeline: gpu.create_graphics_pipeline(
-                include_bytes!("../shaders/vert.spv"),
-                include_bytes!("../shaders/frag.spv"),
-                gpu::RasterDesc {
-                    ..Default::default()
-                },
-            )?,
+            vertex_shader: gpu.create_shader(include_bytes!("../shaders/vert.spv"), gpu::ShaderStage::Vertex)?,
+            pixel_shader: gpu.create_shader(include_bytes!("../shaders/frag.spv"), gpu::ShaderStage::Pixel)?,
+            // pipeline: gpu.create_graphics_pipeline(
+            //     include_bytes!("../shaders/vert.spv"),
+            //     include_bytes!("../shaders/frag.spv"),
+            //     gpu::RasterDesc {
+            //         ..Default::default()
+            //     },
+            // )?,
             command_buffer: queue.create_buffer()?,
             queue,
             present_queue: gpu.create_queue(gpu::QueueType::Present, 0)?,
@@ -36,8 +40,12 @@ impl<'a> Application<'a> {
         command_buffer.begin_recording()?;
 
         let image_index = self.gpu.next_swapchain_image(&self.image_available_semaphore)?;
-        command_buffer.begin_render_pass(image_index);
-        command_buffer.set_pipeline(&self.pipeline);
+        let render_pass_desc = gpu::RenderPassDesc {
+            ..Default::default()
+        };
+        command_buffer.begin_render_pass(&render_pass_desc, image_index);
+        // command_buffer.set_pipeline(&self.pipeline);
+        command_buffer.bind_shaders([&self.vertex_shader, &self.pixel_shader]);
         command_buffer.draw_instanced(3, 1, 0, 0);
         command_buffer.end_render_pass(image_index);
 

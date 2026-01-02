@@ -8,8 +8,8 @@ use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use smart_default::SmartDefault;
 use vulkanalia::{vk, Device, Instance, Version};
-use vulkanalia::vk::{DeviceV1_0, Handle, HasBuilder, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
-use crate::vulkan::{create_graphics_pipeline, create_logical_device, find_suitable_device, QueueFamilies, Swapchain};
+use vulkanalia::vk::{DeviceV1_0, DeviceV1_3, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
+use crate::vulkan::{create_graphics_pipeline, create_logical_device, create_shader, find_suitable_device, QueueFamilies, Swapchain};
 
 pub const VALIDATION_LAYER: vk::ExtensionName = vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
 
@@ -203,6 +203,12 @@ bitflags! {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum ShaderStage {
+    Vertex,
+    Pixel,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
 pub struct Stencil {
     #[default(Op::Always)]
@@ -285,6 +291,19 @@ pub struct RasterDesc<'a> {
     // #[default(&[])]
     // pub color_targets: &'a [ColorTarget],
     pub blend_state: Option<&'a BlendDesc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
+pub struct RenderPassDesc {
+    #[default((0, 0))]
+    pub render_area_offset: (i32, i32),
+    #[default((0, 0))]
+    pub render_area_size: (u32, u32),
+    #[default = 1]
+    pub layer_count: u32,
+    #[default = 0]
+    pub view_mask: u32,
+    // TODO: attachments
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
@@ -543,6 +562,13 @@ impl<'a> CommandBuffer<'a> {
         todo!()
     }
 
+    pub fn bind_shaders<const N: usize>(&mut self, shaders: [&Shader<'_>; N]) {
+        let stages = shaders.map(|s| s.stage);
+        let handles = shaders.map(|s| s.shader);
+
+        unsafe { self.gpu.device.cmd_bind_shaders_ext(self.buffer, &stages, &handles) };
+    }
+
     pub fn dispatch(&mut self, data: DevicePointer, dimensions: (u32, u32, u32)) {
         todo!()
     }
@@ -580,14 +606,20 @@ impl<'a> CommandBuffer<'a> {
     }
 
     // pub fn begin_render_pass(&mut self, desc: &RasterDesc) {
-    pub fn begin_render_pass(&mut self, framebuffer: usize) {
+    pub fn begin_render_pass(&mut self, desc: &RenderPassDesc, framebuffer: usize) {
+        let render_area_size = if desc.render_area_size == (0, 0) {
+            self.gpu.swapchain.extent
+        } else {
+            vk::Extent2D { width: desc.render_area_size.0, height: desc.render_area_size.1 }
+        };
+
         self.image_barrier(
             vk::ImageLayout::UNDEFINED, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             self.gpu.swapchain.images[framebuffer]);
 
         let render_area = vk::Rect2D::builder()
-            .offset(vk::Offset2D { x: 0, y: 0 })
-            .extent(self.gpu.swapchain.extent);
+            .offset(vk::Offset2D { x: desc.render_area_offset.0, y: desc.render_area_offset.1 })
+            .extent(render_area_size);
 
         let color_clear_value = vk::ClearValue {
             color: vk::ClearColorValue {
@@ -605,11 +637,52 @@ impl<'a> CommandBuffer<'a> {
         let color_attachments = [color_attachment];
         let info = vk::RenderingInfoKHR::builder()
             .render_area(render_area)
-            .layer_count(1)
-            .view_mask(0)
+            .layer_count(desc.layer_count.max(1))
+            .view_mask(desc.view_mask)
             .color_attachments(&color_attachments);
 
-        unsafe { self.gpu.device.cmd_begin_rendering_khr(self.buffer, &info) };
+        let dev = &self.gpu.device;
+
+        unsafe { dev.cmd_begin_rendering_khr(self.buffer, &info) };
+
+        unsafe {
+            // dev.cmd_set_stencil_test_enable_ext(self.buffer, false);
+            // dev.cmd_set_color_blend_enable_ext(self.buffer, 0, &[vk::FALSE]);
+            // dev.cmd_set_color_write_mask_ext(self.buffer, 0, &[vk::ColorComponentFlags::all()]);
+            //
+            // dev.cmd_set_depth_compare_op_ext(self.buffer, vk::CompareOp::LESS);
+            // dev.cmd_set_depth_test_enable_ext(self.buffer, false);
+            // dev.cmd_set_depth_write_enable_ext(self.buffer, false);
+            // dev.cmd_set_depth_bias_enable_ext(self.buffer, false);
+            //-- dev.cmd_set_depth_clip_enable_ext(self.buffer, false);
+
+            // let viewport = vk::Viewport::builder()
+            //     .x(render_area.offset.x as f32)
+            //     .y(render_area.offset.y as f32)
+            //     .width(render_area.extent.width as f32)
+            //     .height(render_area.extent.height as f32)
+            //     .min_depth(0.0)
+            //     .max_depth(1.0);
+            // dev.cmd_set_viewport_with_count_ext(self.buffer, &[viewport]);
+            //
+            // dev.cmd_set_scissor_with_count_ext(self.buffer, &[render_area]);
+            // dev.cmd_set_rasterizer_discard_enable_ext(self.buffer, false);
+
+            // dev.cmd_set_vertex_input_ext(
+            //     self.buffer,
+            //     &[] as &[vk::VertexInputBindingDescription2EXT],
+            //     &[] as &[vk::VertexInputAttributeDescription2EXT],
+            // );
+            // dev.cmd_set_rasterization_samples_ext(self.buffer, vk::SampleCountFlags::_1);
+            // dev.cmd_set_primitive_topology_ext(self.buffer, vk::PrimitiveTopology::TRIANGLE_LIST);
+            // dev.cmd_set_primitive_restart_enable_ext(self.buffer, false);
+
+            // dev.cmd_set_sample_mask_ext(self.buffer, vk::SampleCountFlags::_1, None);
+            // dev.cmd_set_alpha_to_coverage_enable_ext(self.buffer, false);
+            // dev.cmd_set_polygon_mode_ext(self.buffer, vk::PolygonMode::FILL);
+            // dev.cmd_set_cull_mode_ext(self.buffer, vk::CullModeFlags::NONE);
+            // dev.cmd_set_front_face_ext(self.buffer, vk::FrontFace::CLOCKWISE);
+        }
     }
     pub fn end_render_pass(&mut self, framebuffer: usize) {
         unsafe { self.gpu.device.cmd_end_rendering_khr(self.buffer) };
@@ -667,6 +740,19 @@ impl<'a> Semaphore<'a> {
 }
 
 #[derive(Debug)]
+pub struct Shader<'a> {
+    shader: vk::ShaderEXT,
+    stage: vk::ShaderStageFlags,
+    gpu: &'a Gpu,
+}
+
+impl<'a> Drop for Shader<'a> {
+    fn drop(&mut self) {
+        unsafe { self.gpu.device.destroy_shader_ext(self.shader, None) };
+    }
+}
+
+#[derive(Debug)]
 pub struct Gpu {
     pub(crate) queue_families: QueueFamilies,
     pub(crate) device: Device,
@@ -720,6 +806,10 @@ impl Gpu {
     //         gpu: self,
     //     })
     // }
+
+    pub fn create_shader(&self, spirv: &[u8], stage: ShaderStage) -> Result<Shader<'_>> {
+        create_shader(self, spirv, stage)
+    }
 
     pub fn create_compute_pipeline(&self, spirv: &[u8]) -> Pipeline<'_> {
         todo!()

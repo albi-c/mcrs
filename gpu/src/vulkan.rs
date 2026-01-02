@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use anyhow::{anyhow, Result};
 use vulkanalia::{vk, Device, Instance};
 use vulkanalia::bytecode::Bytecode;
-use vulkanalia::vk::{DeviceV1_0, Handle, HasBuilder, InstanceV1_0, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
-use crate::{need_portability_ext, validation_enabled, BlendDesc, Cull, Gpu, Pipeline, RasterDesc, Topology, VALIDATION_LAYER};
+use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, InstanceV1_0, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
+use crate::{need_portability_ext, validation_enabled, BlendDesc, Cull, Gpu, Pipeline, RasterDesc, Shader, ShaderStage, Topology, VALIDATION_LAYER};
 
 const FEATURE_REQUIREMENTS: &[(fn(&vk::PhysicalDeviceFeatures) -> vk::Bool32, &str)] = &[
     (|f| f.shader_int64, "shader int64"),
@@ -15,6 +15,7 @@ const EXTENSION_REQUIREMENTS: &[vk::ExtensionName] = &[
     vk::KHR_BUFFER_DEVICE_ADDRESS_EXTENSION.name,
     vk::KHR_SWAPCHAIN_EXTENSION.name,
     vk::KHR_DYNAMIC_RENDERING_EXTENSION.name,
+    vk::EXT_SHADER_OBJECT_EXTENSION.name,
 ];
 
 #[derive(Debug, Copy, Clone)]
@@ -261,15 +262,24 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         .multi_draw_indirect(true)
         .sampler_anisotropy(true);
 
-    let mut dynamic_rendering = vk::PhysicalDeviceDynamicRenderingFeaturesKHR::builder()
+    let mut info_12 = vk::PhysicalDeviceVulkan12Features::builder()
+        .runtime_descriptor_array(true)
+        .buffer_device_address(true);
+
+    let mut info_13 = vk::PhysicalDeviceVulkan13Features::builder()
         .dynamic_rendering(true);
+
+    let mut info_shader_object = vk::PhysicalDeviceShaderObjectFeaturesEXT::builder()
+        .shader_object(true);
 
     let info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(&queue_infos)
         .enabled_layer_names(&layers)
         .enabled_extension_names(&extensions)
         .enabled_features(&features)
-        .push_next(&mut dynamic_rendering);
+        .push_next(&mut info_12)
+        .push_next(&mut info_13)
+        .push_next(&mut info_shader_object);
     let device = unsafe { instance.create_device(physical_device, &info, None)? };
 
     let swapchain = create_swapchain(instance, physical_device, surface, window_size, queue_families, &device)?;
@@ -433,6 +443,39 @@ pub fn create_graphics_pipeline<'a>(gpu: &'a Gpu, vertex_spirv: &[u8], pixel_spi
         layout,
         pipeline,
         bind_point: vk::PipelineBindPoint::GRAPHICS,
+        gpu,
+    })
+}
+
+fn get_stage(stage: ShaderStage) -> vk::ShaderStageFlags {
+    match stage {
+        ShaderStage::Vertex => vk::ShaderStageFlags::VERTEX,
+        ShaderStage::Pixel => vk::ShaderStageFlags::FRAGMENT,
+    }
+}
+
+fn get_next_stage(stage: ShaderStage) -> vk::ShaderStageFlags {
+    match stage {
+        ShaderStage::Vertex => vk::ShaderStageFlags::FRAGMENT,
+        ShaderStage::Pixel => vk::ShaderStageFlags::empty(),
+    }
+}
+
+pub fn create_shader<'a>(gpu: &'a Gpu, spirv: &[u8], stage: ShaderStage) -> Result<Shader<'a>> {
+    assert_eq!(spirv.as_ptr() as usize % 4, 0, "misaligned spir-v pointer");
+    assert_eq!(spirv.len() % 4, 0, "misaligned spir-v length");
+
+    let vk_stage = get_stage(stage);
+    let info = vk::ShaderCreateInfoEXT::builder()
+        .stage(vk_stage)
+        .next_stage(get_next_stage(stage))
+        .code(spirv)
+        .name(b"main\0");
+
+    let infos = [info];
+    Ok(Shader {
+        shader: unsafe { gpu.device.create_shaders_ext(&infos, None)?.0[0] },
+        stage: vk_stage,
         gpu,
     })
 }
