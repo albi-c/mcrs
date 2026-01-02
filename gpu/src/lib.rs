@@ -8,7 +8,7 @@ use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use smart_default::SmartDefault;
 use vulkanalia::{vk, Device, Instance, Version};
-use vulkanalia::vk::{DeviceV1_0, DeviceV1_3, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
+use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
 use crate::vulkan::{create_graphics_pipeline, create_logical_device, create_shader, find_suitable_device, QueueFamilies, Swapchain};
 
 pub const VALIDATION_LAYER: vk::ExtensionName = vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
@@ -563,10 +563,25 @@ impl<'a> CommandBuffer<'a> {
     }
 
     pub fn bind_shaders<const N: usize>(&mut self, shaders: [&Shader<'_>; N]) {
+        self.unbind_shaders_raw(&[vk::ShaderStageFlags::GEOMETRY]);
+
         let stages = shaders.map(|s| s.stage);
         let handles = shaders.map(|s| s.shader);
 
         unsafe { self.gpu.device.cmd_bind_shaders_ext(self.buffer, &stages, &handles) };
+    }
+    pub fn unbind_shaders<const N: usize>(&mut self, stages: [ShaderStage; N]) {
+        self.unbind_shaders_raw(&stages.map(vulkan::get_stage));
+    }
+    fn unbind_shaders_raw(&mut self, stages: &[vk::ShaderStageFlags]) {
+        unsafe {
+            (self.gpu.device.commands().cmd_bind_shaders_ext)(
+                self.buffer,
+                stages.len() as u32,
+                stages.as_ptr(),
+                std::ptr::null()
+            );
+        }
     }
 
     pub fn dispatch(&mut self, data: DevicePointer, dimensions: (u32, u32, u32)) {
@@ -605,7 +620,6 @@ impl<'a> CommandBuffer<'a> {
         }
     }
 
-    // pub fn begin_render_pass(&mut self, desc: &RasterDesc) {
     pub fn begin_render_pass(&mut self, desc: &RenderPassDesc, framebuffer: usize) {
         let render_area_size = if desc.render_area_size == (0, 0) {
             self.gpu.swapchain.extent
@@ -623,7 +637,7 @@ impl<'a> CommandBuffer<'a> {
 
         let color_clear_value = vk::ClearValue {
             color: vk::ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 1.0],
+                float32: [0.0, 1.0, 0.0, 1.0],
             },
         };
 
@@ -646,42 +660,41 @@ impl<'a> CommandBuffer<'a> {
         unsafe { dev.cmd_begin_rendering_khr(self.buffer, &info) };
 
         unsafe {
-            // dev.cmd_set_stencil_test_enable_ext(self.buffer, false);
-            // dev.cmd_set_color_blend_enable_ext(self.buffer, 0, &[vk::FALSE]);
-            // dev.cmd_set_color_write_mask_ext(self.buffer, 0, &[vk::ColorComponentFlags::all()]);
-            //
-            // dev.cmd_set_depth_compare_op_ext(self.buffer, vk::CompareOp::LESS);
-            // dev.cmd_set_depth_test_enable_ext(self.buffer, false);
-            // dev.cmd_set_depth_write_enable_ext(self.buffer, false);
-            // dev.cmd_set_depth_bias_enable_ext(self.buffer, false);
-            //-- dev.cmd_set_depth_clip_enable_ext(self.buffer, false);
+            dev.cmd_set_stencil_test_enable_ext(self.buffer, false);
+            dev.cmd_set_color_blend_enable_ext(self.buffer, 0, &[vk::FALSE]);
+            dev.cmd_set_color_write_mask_ext(self.buffer, 0, &[vk::ColorComponentFlags::all()]);
 
-            // let viewport = vk::Viewport::builder()
-            //     .x(render_area.offset.x as f32)
-            //     .y(render_area.offset.y as f32)
-            //     .width(render_area.extent.width as f32)
-            //     .height(render_area.extent.height as f32)
-            //     .min_depth(0.0)
-            //     .max_depth(1.0);
-            // dev.cmd_set_viewport_with_count_ext(self.buffer, &[viewport]);
-            //
-            // dev.cmd_set_scissor_with_count_ext(self.buffer, &[render_area]);
-            // dev.cmd_set_rasterizer_discard_enable_ext(self.buffer, false);
+            dev.cmd_set_depth_compare_op_ext(self.buffer, vk::CompareOp::LESS);
+            dev.cmd_set_depth_test_enable_ext(self.buffer, false);
+            dev.cmd_set_depth_write_enable_ext(self.buffer, false);
+            dev.cmd_set_depth_bias_enable_ext(self.buffer, false);
+            // dev.cmd_set_depth_clip_enable_ext(self.buffer, false);
 
-            // dev.cmd_set_vertex_input_ext(
-            //     self.buffer,
-            //     &[] as &[vk::VertexInputBindingDescription2EXT],
-            //     &[] as &[vk::VertexInputAttributeDescription2EXT],
-            // );
-            // dev.cmd_set_rasterization_samples_ext(self.buffer, vk::SampleCountFlags::_1);
-            // dev.cmd_set_primitive_topology_ext(self.buffer, vk::PrimitiveTopology::TRIANGLE_LIST);
-            // dev.cmd_set_primitive_restart_enable_ext(self.buffer, false);
+            let viewport = vk::Viewport::builder()
+                .x(render_area.offset.x as f32)
+                .y(render_area.offset.y as f32)
+                .width(render_area.extent.width as f32)
+                .height(render_area.extent.height as f32)
+                .min_depth(0.0)
+                .max_depth(1.0);
+            dev.cmd_set_viewport_with_count_ext(self.buffer, &[viewport]);
+            dev.cmd_set_scissor_with_count_ext(self.buffer, &[render_area]);
+            dev.cmd_set_rasterizer_discard_enable_ext(self.buffer, false);
 
-            // dev.cmd_set_sample_mask_ext(self.buffer, vk::SampleCountFlags::_1, None);
-            // dev.cmd_set_alpha_to_coverage_enable_ext(self.buffer, false);
-            // dev.cmd_set_polygon_mode_ext(self.buffer, vk::PolygonMode::FILL);
-            // dev.cmd_set_cull_mode_ext(self.buffer, vk::CullModeFlags::NONE);
-            // dev.cmd_set_front_face_ext(self.buffer, vk::FrontFace::CLOCKWISE);
+            dev.cmd_set_vertex_input_ext(
+                self.buffer,
+                &[] as &[vk::VertexInputBindingDescription2EXT],
+                &[] as &[vk::VertexInputAttributeDescription2EXT],
+            );
+            dev.cmd_set_rasterization_samples_ext(self.buffer, vk::SampleCountFlags::_1);
+            dev.cmd_set_primitive_topology_ext(self.buffer, vk::PrimitiveTopology::TRIANGLE_LIST);
+            dev.cmd_set_primitive_restart_enable_ext(self.buffer, false);
+
+            dev.cmd_set_sample_mask_ext(self.buffer, vk::SampleCountFlags::_1, Some(&1));
+            dev.cmd_set_alpha_to_coverage_enable_ext(self.buffer, false);
+            dev.cmd_set_polygon_mode_ext(self.buffer, vk::PolygonMode::FILL);
+            dev.cmd_set_cull_mode_ext(self.buffer, vk::CullModeFlags::NONE);
+            dev.cmd_set_front_face_ext(self.buffer, vk::FrontFace::CLOCKWISE);
         }
     }
     pub fn end_render_pass(&mut self, framebuffer: usize) {
@@ -880,3 +893,5 @@ impl Gpu {
         Ok(())
     }
 }
+
+pub use vulkan::create_debug_info_callback;

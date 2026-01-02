@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::ffi::{c_void, CStr};
 use anyhow::{anyhow, Result};
 use vulkanalia::{vk, Device, Instance};
 use vulkanalia::bytecode::Bytecode;
@@ -12,8 +13,14 @@ const FEATURE_REQUIREMENTS: &[(fn(&vk::PhysicalDeviceFeatures) -> vk::Bool32, &s
 ];
 
 const EXTENSION_REQUIREMENTS: &[vk::ExtensionName] = &[
+    vk::KHR_SYNCHRONIZATION2_EXTENSION.name,
+    vk::KHR_DEVICE_GROUP_EXTENSION.name,
     vk::KHR_BUFFER_DEVICE_ADDRESS_EXTENSION.name,
     vk::KHR_SWAPCHAIN_EXTENSION.name,
+    vk::KHR_MULTIVIEW_EXTENSION.name,
+    vk::KHR_MAINTENANCE2_EXTENSION.name,
+    vk::KHR_CREATE_RENDERPASS2_EXTENSION.name,
+    vk::KHR_DEPTH_STENCIL_RESOLVE_EXTENSION.name,
     vk::KHR_DYNAMIC_RENDERING_EXTENSION.name,
     vk::EXT_SHADER_OBJECT_EXTENSION.name,
 ];
@@ -152,10 +159,12 @@ fn create_swapchain_image_views(device: &Device, images: &[vk::Image], format: v
 }
 
 fn check_device(instance: &Instance, device: vk::PhysicalDevice, surface: vk::SurfaceKHR) -> Result<QueueFamilies> {
+    let device_properties = unsafe { instance.get_physical_device_properties(device) };
+
     let features = unsafe { instance.get_physical_device_features(device) };
     for (test, msg) in FEATURE_REQUIREMENTS {
         if test(&features) != vk::TRUE {
-            return Err(anyhow!("gpu missing {} support", msg))
+            return Err(anyhow!("gpu '{}' missing {} support", device_properties.device_name, msg))
         }
     }
 
@@ -166,7 +175,7 @@ fn check_device(instance: &Instance, device: vk::PhysicalDevice, surface: vk::Su
 
     for ext in EXTENSION_REQUIREMENTS {
         if !extensions.contains(ext) {
-            return Err(anyhow!("gpu missing extension: {}", ext.to_string_lossy()));
+            return Err(anyhow!("gpu '{}' missing extension: {}", device_properties.device_name, ext.to_string_lossy()));
         }
     }
 
@@ -228,6 +237,37 @@ impl Swapchain {
     }
 }
 
+extern "system" fn vulkan_debug_callback(severity: vk::DebugUtilsMessageSeverityFlagsEXT,
+                                         ty: vk::DebugUtilsMessageTypeFlagsEXT,
+                                         data: *const vk::DebugUtilsMessengerCallbackDataEXT,
+                                         _: *mut c_void) -> vk::Bool32 {
+    let data = unsafe { &*data };
+    let message = unsafe { CStr::from_ptr(data.message) }.to_string_lossy();
+
+    if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::ERROR {
+        log::error!("[{:?}] {}", ty, message);
+    } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::WARNING {
+        log::warn!("[{:?}] {}", ty, message);
+    } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::INFO {
+        log::debug!("[{:?}] {}", ty, message);
+    } else {
+        log::trace!("[{:?}] {}", ty, message);
+    }
+
+    vk::FALSE
+}
+
+pub fn create_debug_info_callback() -> vk::DebugUtilsMessengerCreateInfoEXTBuilder<'static> {
+    let debug_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
+        .message_severity(vk::DebugUtilsMessageSeverityFlagsEXT::all())
+        .message_type(
+            vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
+                | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
+                | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE)
+        .user_callback(Some(vulkan_debug_callback));
+    debug_info
+}
+
 pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalDevice,
                              queue_families: QueueFamilies, surface: vk::SurfaceKHR,
                              window_size: (u32, u32)) -> Result<(Device, Swapchain)> {
@@ -257,6 +297,15 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         extensions.push(vk::KHR_PORTABILITY_ENUMERATION_EXTENSION.name.as_ptr());
     }
 
+    let available_layers = unsafe { instance.enumerate_device_layer_properties(physical_device)? }
+        .iter()
+        .map(|layer| layer.layer_name)
+        .collect::<HashSet<_>>();
+
+    if validation_enabled() && !available_layers.contains(&VALIDATION_LAYER) {
+        return Err(anyhow!("validation layer not supported"));
+    }
+
     let features = vk::PhysicalDeviceFeatures::builder()
         .shader_int64(true)
         .multi_draw_indirect(true)
@@ -267,7 +316,8 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         .buffer_device_address(true);
 
     let mut info_13 = vk::PhysicalDeviceVulkan13Features::builder()
-        .dynamic_rendering(true);
+        .dynamic_rendering(true)
+        .synchronization2(true);
 
     let mut info_shader_object = vk::PhysicalDeviceShaderObjectFeaturesEXT::builder()
         .shader_object(true);
@@ -447,7 +497,7 @@ pub fn create_graphics_pipeline<'a>(gpu: &'a Gpu, vertex_spirv: &[u8], pixel_spi
     })
 }
 
-fn get_stage(stage: ShaderStage) -> vk::ShaderStageFlags {
+pub fn get_stage(stage: ShaderStage) -> vk::ShaderStageFlags {
     match stage {
         ShaderStage::Vertex => vk::ShaderStageFlags::VERTEX,
         ShaderStage::Pixel => vk::ShaderStageFlags::FRAGMENT,
@@ -462,14 +512,12 @@ fn get_next_stage(stage: ShaderStage) -> vk::ShaderStageFlags {
 }
 
 pub fn create_shader<'a>(gpu: &'a Gpu, spirv: &[u8], stage: ShaderStage) -> Result<Shader<'a>> {
-    assert_eq!(spirv.as_ptr() as usize % 4, 0, "misaligned spir-v pointer");
-    assert_eq!(spirv.len() % 4, 0, "misaligned spir-v length");
-
     let vk_stage = get_stage(stage);
     let info = vk::ShaderCreateInfoEXT::builder()
         .stage(vk_stage)
         .next_stage(get_next_stage(stage))
         .code(spirv)
+        .code_type(vk::ShaderCodeTypeEXT::SPIRV)
         .name(b"main\0");
 
     let infos = [info];

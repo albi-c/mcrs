@@ -9,3 +9,4 @@ bitflags = "2.10.0"
 smart-default = "0.7.1"
 vulkanalia = { workspace = true }
 anyhow = { workspace = true }
+log = { workspace = true }

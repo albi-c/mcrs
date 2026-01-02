@@ -1,7 +1,6 @@
 mod application;
 
 use std::collections::HashSet;
-use std::ffi::{c_void, CStr};
 use anyhow::{anyhow, Result};
 use vulkanalia::{vk, Entry, Instance};
 use vulkanalia::loader::{LibloadingLoader, LIBRARY};
@@ -12,26 +11,6 @@ use winit::event_loop::EventLoop;
 use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
 use winit::window::{Window, WindowBuilder};
 use crate::application::Application;
-
-extern "system" fn vulkan_debug_callback(severity: vk::DebugUtilsMessageSeverityFlagsEXT,
-                                         ty: vk::DebugUtilsMessageTypeFlagsEXT,
-                                         data: *const vk::DebugUtilsMessengerCallbackDataEXT,
-                                         _: *mut c_void) -> vk::Bool32 {
-    let data = unsafe { &*data };
-    let message = unsafe { CStr::from_ptr(data.message) }.to_string_lossy();
-
-    if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::ERROR {
-        log::error!("[{:?}] {}", ty, message);
-    } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::WARNING {
-        log::warn!("[{:?}] {}", ty, message);
-    } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::INFO {
-        log::debug!("[{:?}] {}", ty, message);
-    } else {
-        log::trace!("[{:?}] {}", ty, message);
-    }
-
-    vk::FALSE
-}
 
 fn create_instance(window: &Window, entry: &Entry) -> Result<(Instance, Option<vk::DebugUtilsMessengerEXT>)> {
     let app_info = vk::ApplicationInfo::builder()
@@ -52,6 +31,8 @@ fn create_instance(window: &Window, entry: &Entry) -> Result<(Instance, Option<v
         extensions.push(vk::KHR_PORTABILITY_ENUMERATION_EXTENSION.name.as_ptr());
         vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
     } else {
+        extensions.push(vk::KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_EXTENSION.name.as_ptr());
+        extensions.push(vk::KHR_DEVICE_GROUP_CREATION_EXTENSION.name.as_ptr());
         vk::InstanceCreateFlags::empty()
     };
 
@@ -69,14 +50,7 @@ fn create_instance(window: &Window, entry: &Entry) -> Result<(Instance, Option<v
     }
 
     let (layers, mut debug_info) = if gpu::validation_enabled() {
-        let debug_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
-            .message_severity(vk::DebugUtilsMessageSeverityFlagsEXT::all())
-            .message_type(
-                vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
-                    | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
-                    | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE)
-            .user_callback(Some(vulkan_debug_callback));
-        (vec![gpu::VALIDATION_LAYER.as_ptr()], Some(debug_info))
+        (vec![gpu::VALIDATION_LAYER.as_ptr()], Some(gpu::create_debug_info_callback()))
     } else {
         (vec![], None)
     };
@@ -142,6 +116,8 @@ impl Drop for App {
 }
 
 fn main() -> Result<()> {
+    pretty_env_logger::init();
+
     let mut event_loop = EventLoop::new()?;
     let window = WindowBuilder::new()
         .with_title("MCRS")
