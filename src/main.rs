@@ -138,6 +138,9 @@ fn main() -> Result<()> {
                 WindowEvent::CloseRequested => target.exit(),
                 _ => {},
             },
+            Event::LoopExiting => {
+                app.gpu.wait_before_destroy();
+            },
             _ => {},
         }
     })?;

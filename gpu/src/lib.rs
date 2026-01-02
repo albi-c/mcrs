@@ -9,7 +9,7 @@ use bytemuck::{Pod, Zeroable};
 use smart_default::SmartDefault;
 use vulkanalia::{vk, Device, Instance, Version};
 use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
-use crate::vulkan::{create_graphics_pipeline, create_logical_device, create_shader, find_suitable_device, QueueFamilies, Swapchain};
+use crate::vulkan::{create_logical_device, create_shader, find_suitable_device, QueueFamilies, Swapchain};
 
 pub const VALIDATION_LAYER: vk::ExtensionName = vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
 
@@ -415,41 +415,6 @@ impl<'a> Texture<'a> {
     }
 }
 
-// #[derive(Debug)]
-// pub struct RenderPass<'a> {
-//     pass: vk::RenderPass,
-//     framebuffers: Vec<vk::Framebuffer>,
-//     gpu: &'a Gpu,
-// }
-//
-// impl<'a> Drop for RenderPass<'a> {
-//     fn drop(&mut self) {
-//         unsafe {
-//             for fb in self.framebuffers.drain(..) {
-//                 self.gpu.device.destroy_framebuffer(fb, None);
-//             }
-//             self.gpu.device.destroy_render_pass(self.pass, None);
-//         }
-//     }
-// }
-
-#[derive(Debug)]
-pub struct Pipeline<'a> {
-    layout: vk::PipelineLayout,
-    pipeline: vk::Pipeline,
-    bind_point: vk::PipelineBindPoint,
-    gpu: &'a Gpu,
-}
-
-impl<'a> Drop for Pipeline<'a> {
-    fn drop(&mut self) {
-        unsafe {
-            self.gpu.device.destroy_pipeline(self.pipeline, None);
-            self.gpu.device.destroy_pipeline_layout(self.layout, None);
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct DepthStencilState<'a> {
     gpu: &'a Gpu,
@@ -552,9 +517,9 @@ impl<'a> CommandBuffer<'a> {
         self.wait_before_masked(after, ptr, value, op, hazards, u64::MAX)
     }
 
-    pub fn set_pipeline(&mut self, pipeline: &Pipeline<'_>) {
-        unsafe { self.gpu.device.cmd_bind_pipeline(self.buffer, pipeline.bind_point, pipeline.pipeline) };
-    }
+    // pub fn set_pipeline(&mut self, pipeline: &Pipeline<'_>) {
+    //     unsafe { self.gpu.device.cmd_bind_pipeline(self.buffer, pipeline.bind_point, pipeline.pipeline) };
+    // }
     pub fn set_depth_stencil_state(&mut self, state: &DepthStencilState<'a>) {
         todo!()
     }
@@ -786,9 +751,14 @@ impl Gpu {
         })
     }
 
+    pub fn wait_before_destroy(&self) {
+        unsafe {
+            self.device.device_wait_idle().unwrap();
+        }
+    }
+
     pub unsafe fn destroy(&mut self, instance: &Instance) {
         unsafe {
-            // self.device.device_wait_idle().unwrap();
             self.swapchain.destroy(&self.device);
             self.device.destroy_device(None);
             instance.destroy_surface_khr(self.surface, None);
@@ -811,30 +781,21 @@ impl Gpu {
         todo!()
     }
 
-    // pub fn create_render_pass(&self) -> Result<RenderPass<'_>> {
-    //     let pass = create_render_pass(self)?;
-    //     Ok(RenderPass {
-    //         pass,
-    //         framebuffers: create_framebuffers(self, pass)?,
-    //         gpu: self,
-    //     })
-    // }
-
     pub fn create_shader(&self, spirv: &[u8], stage: ShaderStage) -> Result<Shader<'_>> {
         create_shader(self, spirv, stage)
     }
 
-    pub fn create_compute_pipeline(&self, spirv: &[u8]) -> Pipeline<'_> {
-        todo!()
-    }
-    pub fn create_graphics_pipeline(&self, vertex_spirv: &[u8], pixel_spirv: &[u8],
-                                    raster_desc: RasterDesc) -> Result<Pipeline<'_>> {
-        create_graphics_pipeline(self, vertex_spirv, pixel_spirv, raster_desc)
-    }
-    pub fn create_graphics_meshlet_pipeline(&self, meshlet_spirv: &[u8], pixel_spirv: &[u8],
-                                            raster_desc: RasterDesc) -> Pipeline<'_> {
-        todo!()
-    }
+    // pub fn create_compute_pipeline(&self, spirv: &[u8]) -> Pipeline<'_> {
+    //     todo!()
+    // }
+    // pub fn create_graphics_pipeline(&self, vertex_spirv: &[u8], pixel_spirv: &[u8],
+    //                                 raster_desc: RasterDesc) -> Result<Pipeline<'_>> {
+    //     create_graphics_pipeline(self, vertex_spirv, pixel_spirv, raster_desc)
+    // }
+    // pub fn create_graphics_meshlet_pipeline(&self, meshlet_spirv: &[u8], pixel_spirv: &[u8],
+    //                                         raster_desc: RasterDesc) -> Pipeline<'_> {
+    //     todo!()
+    // }
 
     pub fn create_depth_stencil_state(&self, desc: DepthStencilDesc) -> DepthStencilState<'_> {
         todo!()
@@ -863,7 +824,6 @@ impl Gpu {
         })
     }
 
-    // pub fn create_semaphore(&self, value: u64) -> Result<Semaphore<'_>> {
     pub fn create_semaphore(&self) -> Result<Semaphore<'_>> {
         let info = vk::SemaphoreCreateInfo::builder();
         Ok(Semaphore {
