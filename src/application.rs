@@ -44,7 +44,7 @@ impl<'a> Application<'a> {
 
         command_buffer.end_recording()?;
 
-        self.queue.submit(&command_buffer, &self.frame_semaphore, self.next_frame)?;
+        self.queue.submit(command_buffer, &self.frame_semaphore, self.next_frame)?;
         self.gpu.swapchain_present(&self.frame_semaphore, self.next_frame)?;
 
         self.next_frame += 1;

@@ -1,4 +1,5 @@
 #![feature(try_find)]
+#![feature(linked_list_cursors)]
 
 mod vulkan;
 
@@ -10,7 +11,7 @@ use bytemuck::{Pod, Zeroable};
 use smart_default::SmartDefault;
 use vulkanalia::{vk, Device, Instance, Version};
 use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
-use crate::vulkan::{create_logical_device, create_shader, create_swapchain, find_suitable_device, QueueFamilies, Queues, Swapchain};
+use crate::vulkan::{create_logical_device, create_semaphore, create_shader, create_swapchain, find_suitable_device, CommandBufferPool, PooledCommandBuffer, QueueFamilies, Queues, Swapchain};
 
 pub const VALIDATION_LAYER: vk::ExtensionName = vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
 
@@ -428,8 +429,7 @@ pub struct BlendState<'a> {
 #[derive(Debug)]
 pub struct Queue<'a> {
     queue: vk::Queue,
-    command_pool: vk::CommandPool,
-    // if None, command pool is not destroyed on Drop
+    command_pool: &'a CommandBufferPool,
     gpu: Option<&'a Gpu>,
 }
 
@@ -439,74 +439,63 @@ impl<'a> Queue<'a> {
     }
 
     fn create_buffer_gpu(&self, gpu: &'a Gpu) -> Result<CommandBuffer<'_>> {
-        let info = vk::CommandBufferAllocateInfo::builder()
-            .command_pool(self.command_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1);
+        let buffer = self.command_pool.acquire(&gpu.device)?;
         Ok(CommandBuffer {
-            buffer: unsafe { gpu.device.allocate_command_buffers(&info)?[0] },
-            queue: self,
+            buffer: buffer.data().0,
+            item: buffer,
             gpu,
         })
     }
 
-    pub fn submit<'b>(&self, buffer: &'b CommandBuffer<'a>, signal_semaphore: &Semaphore<'a>,
-                      signal_value: u64) -> Result<()> where 'a: 'b {
+    pub fn submit(&self, buffer:CommandBuffer<'a>, signal_semaphore: &Semaphore<'a>,
+                  signal_value: u64) -> Result<()> {
         self.submit_gpu(self.gpu.unwrap(), buffer, signal_semaphore, signal_value)
     }
 
-    pub fn submit_no_signal<'b>(&self, buffer: &'b CommandBuffer<'a>) -> Result<()> where 'a: 'b {
-        let command_buffers = [buffer.buffer];
-        let info = vk::SubmitInfo::builder()
-            .command_buffers(&command_buffers);
-
-        unsafe { self.gpu.unwrap().device.queue_submit(self.queue, &[info], vk::Fence::null())? };
-
-        Ok(())
+    fn buffer_prepare_submit(buffer: &mut CommandBuffer<'a>) -> (vk::Semaphore, u64) {
+        let buffer_data = buffer.item.data_mut();
+        buffer_data.2 += 1;
+        (buffer_data.1, buffer_data.2)
     }
 
-    fn submit_gpu<'b>(&self, gpu: &Gpu, buffer: &'b CommandBuffer<'a>, signal_semaphore: &Semaphore<'a>,
-                      signal_value: u64) -> Result<()> where 'a: 'b {
-        let signal_values = [signal_value];
+    fn submit_gpu(&self, gpu: &Gpu, mut buffer: CommandBuffer<'a>, signal_semaphore: &Semaphore<'a>,
+                  signal_value: u64) -> Result<()> {
+        let (buffer_semaphore, buffer_value) = Self::buffer_prepare_submit(&mut buffer);
+        self.custom_submit(gpu, buffer,
+                           &[signal_semaphore.semaphore, buffer_semaphore],
+                           &[signal_value, buffer_value],
+                           &[], &[], &[])
+    }
+
+    fn custom_submit(&self, gpu: &Gpu, buffer: CommandBuffer<'a>,
+                     signal_semaphores: &[vk::Semaphore], signal_values: &[u64],
+                     wait_semaphores: &[vk::Semaphore], wait_values: &[u64],
+                     wait_dst_stage_mask: &[vk::PipelineStageFlags]) -> Result<()> {
         let mut semaphore_info = vk::TimelineSemaphoreSubmitInfo::builder()
-            .signal_semaphore_values(&signal_values);
+            .wait_semaphore_values(wait_values)
+            .signal_semaphore_values(signal_values);
 
         let command_buffers = [buffer.buffer];
-        let signal_semaphores = [signal_semaphore.semaphore];
         let info = vk::SubmitInfo::builder()
+            .wait_semaphores(wait_semaphores)
+            .wait_dst_stage_mask(wait_dst_stage_mask)
             .command_buffers(&command_buffers)
-            .signal_semaphores(&signal_semaphores)
+            .signal_semaphores(signal_semaphores)
             .push_next(&mut semaphore_info);
 
         unsafe { gpu.device.queue_submit(self.queue, &[info], vk::Fence::null())? };
 
-        Ok(())
-    }
-}
+        self.command_pool.release(&gpu.device, buffer.item);
 
-impl<'a> Drop for Queue<'a> {
-    fn drop(&mut self) {
-        if let Some(gpu) = self.gpu {
-            unsafe { gpu.device.destroy_command_pool(self.command_pool, None); }
-        }
+        Ok(())
     }
 }
 
 #[derive(Debug)]
 pub struct CommandBuffer<'a> {
     buffer: vk::CommandBuffer,
-    queue: &'a Queue<'a>,
+    item: PooledCommandBuffer,
     gpu: &'a Gpu,
-}
-
-impl<'a> Drop for CommandBuffer<'a> {
-    fn drop(&mut self) {
-        unsafe {
-            self.gpu.device.reset_command_buffer(self.buffer, vk::CommandBufferResetFlags::RELEASE_RESOURCES)
-                .expect("failed to reset command buffer");
-            self.gpu.device.free_command_buffers(self.queue.command_pool, &[self.buffer]);
-        }
-    }
 }
 
 impl<'a> CommandBuffer<'a> {
@@ -770,7 +759,7 @@ impl<'a> Drop for Shader<'a> {
 #[derive(Debug)]
 pub struct Gpu {
     pub(crate) queue_families: QueueFamilies,
-    pub(crate) internal_queues: Queues,
+    pub(crate) queues: Queues,
     pub(crate) physical_device: vk::PhysicalDevice,
     pub(crate) device: Device,
     pub(crate) surface: vk::SurfaceKHR,
@@ -786,7 +775,7 @@ impl Gpu {
             instance, physical_device, surface, window_size, queue_families, &logical_device)?;
         Ok(Self {
             queue_families,
-            internal_queues,
+            queues: internal_queues,
             physical_device,
             device: logical_device,
             surface,
@@ -812,7 +801,7 @@ impl Gpu {
     pub unsafe fn destroy(&mut self, instance: &Instance) {
         unsafe {
             self.swapchain.borrow_mut().destroy(&self.device);
-            self.internal_queues.destroy(&self.device);
+            self.queues.destroy(&self.device);
             self.device.destroy_device(None);
             instance.destroy_surface_khr(self.surface, None);
         }
@@ -857,41 +846,16 @@ impl Gpu {
         todo!()
     }
 
-    fn get_queue_family(&self, ty: QueueType) -> u32 {
-        match ty {
-            QueueType::Graphics => self.queue_families.graphics,
-            _ => panic!("unsupported queue type: {:?}", ty),
-        }
-    }
-
-    fn get_queue(&self, family: u32) -> vk::Queue {
-        unsafe { self.device.get_device_queue(family, 0) }
-    }
-
     pub fn create_queue(&self, ty: QueueType) -> Result<Queue<'_>> {
-        let family = self.get_queue_family(ty);
-        let queue = self.get_queue(family);
-
-        let pool_info = vk::CommandPoolCreateInfo::builder()
-            .flags(vk::CommandPoolCreateFlags::TRANSIENT)
-            .queue_family_index(family);
-        let command_pool = unsafe { self.device.create_command_pool(&pool_info, None)? };
-
-        Ok(Queue {
-            queue,
-            command_pool,
-            gpu: Some(self),
+        Ok(match ty {
+            QueueType::Graphics => self.queues.graphics(self),
+            _ => panic!("unsupported queue type: {:?}", ty),
         })
     }
 
     pub fn create_semaphore(&self, value: u64) -> Result<Semaphore<'_>> {
-        let mut init_info = vk::SemaphoreTypeCreateInfo::builder()
-            .semaphore_type(vk::SemaphoreType::TIMELINE)
-            .initial_value(value);
-        let info = vk::SemaphoreCreateInfo::builder()
-            .push_next(&mut init_info);
         Ok(Semaphore {
-            semaphore: unsafe { self.device.create_semaphore(&info, None) }?,
+            semaphore: create_semaphore(&self.device, value)?,
             gpu: self,
         })
     }
@@ -928,28 +892,28 @@ impl Gpu {
         let image_index = swapchain.image_index;
         let present_semaphore = swapchain.present_semaphores[image_index];
 
-        let graphics_queue = self.internal_queues.graphics();
-        let mut cmd_buf = graphics_queue.create_buffer_gpu(self)?;
+        let graphics_queue = self.queues.graphics(self);
+        let mut cmd_buf = graphics_queue.create_buffer()?;
         cmd_buf.begin_recording()?;
 
         // TODO: move image layout transition here
 
         cmd_buf.end_recording()?;
 
-        let wait_semaphore_values = [wait_value];
-        let mut semaphore_info = vk::TimelineSemaphoreSubmitInfo::builder()
-            .wait_semaphore_values(&wait_semaphore_values);
-
-        let command_buffers = [cmd_buf.buffer];
-        let wait_semaphores = [wait_semaphore.semaphore];
-        let wait_stage_flags = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let signal_semaphores = [present_semaphore];
-        let submit_info = vk::SubmitInfo::builder()
-            .command_buffers(&command_buffers)
-            .wait_semaphores(&wait_semaphores)
-            .wait_dst_stage_mask(&wait_stage_flags)
-            .signal_semaphores(&signal_semaphores)
-            .push_next(&mut semaphore_info);
+        // let wait_semaphore_values = [wait_value];
+        // let mut semaphore_info = vk::TimelineSemaphoreSubmitInfo::builder()
+        //     .wait_semaphore_values(&wait_semaphore_values);
+        //
+        // let command_buffers = [cmd_buf.buffer];
+        // let wait_semaphores = [wait_semaphore.semaphore];
+        // let wait_stage_flags = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        // let signal_semaphores = [present_semaphore];
+        // let submit_info = vk::SubmitInfo::builder()
+        //     .command_buffers(&command_buffers)
+        //     .wait_semaphores(&wait_semaphores)
+        //     .wait_dst_stage_mask(&wait_stage_flags)
+        //     .signal_semaphores(&signal_semaphores)
+        //     .push_next(&mut semaphore_info);
 
         let wait_semaphores = [present_semaphore];
         let swapchains = [swapchain.swapchain];
@@ -959,9 +923,17 @@ impl Gpu {
             .swapchains(&swapchains)
             .image_indices(&image_indices);
 
+        let (buffer_semaphore, buffer_value) = Queue::buffer_prepare_submit(&mut cmd_buf);
+        graphics_queue.custom_submit(self, cmd_buf,
+                                     &[buffer_semaphore, present_semaphore],
+                                     &[buffer_value, 0],
+                                     &[wait_semaphore.semaphore],
+                                     &[wait_value],
+                                     &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])?;
+
         unsafe {
-            self.device.queue_submit(self.internal_queues.raw_graphics(), &[submit_info], vk::Fence::null())?;
-            self.device.queue_present_khr(self.internal_queues.present(), &info)?;
+            // self.device.queue_submit(self.queues.raw_graphics(), &[submit_info], vk::Fence::null())?;
+            self.device.queue_present_khr(self.queues.present(), &info)?;
         }
 
         Ok(())

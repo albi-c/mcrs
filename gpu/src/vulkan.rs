@@ -1,8 +1,9 @@
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashSet, LinkedList};
 use std::ffi::{c_void, CStr};
 use anyhow::{anyhow, Result};
 use vulkanalia::{vk, Device, Instance};
-use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, InstanceV1_0, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
+use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, InstanceV1_0, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
 use crate::{need_portability_ext, validation_enabled, Gpu, Queue, Shader, ShaderStage, VALIDATION_LAYER};
 
 const FEATURE_REQUIREMENTS: &[(fn(&vk::PhysicalDeviceFeatures) -> vk::Bool32, &str)] = &[
@@ -25,6 +26,115 @@ const EXTENSION_REQUIREMENTS: &[vk::ExtensionName] = &[
     vk::KHR_TIMELINE_SEMAPHORE_EXTENSION.name,
 ];
 
+pub fn create_semaphore(device: &Device, value: u64) -> Result<vk::Semaphore> {
+    let mut init_info = vk::SemaphoreTypeCreateInfo::builder()
+        .semaphore_type(vk::SemaphoreType::TIMELINE)
+        .initial_value(value);
+    let info = vk::SemaphoreCreateInfo::builder()
+        .push_next(&mut init_info);
+    Ok( unsafe { device.create_semaphore(&info, None) }?)
+}
+
+#[derive(Debug)]
+pub struct PooledCommandBuffer {
+    item: LinkedList<(vk::CommandBuffer, vk::Semaphore, u64)>,
+}
+
+impl PooledCommandBuffer {
+    pub fn data(&self) -> &(vk::CommandBuffer, vk::Semaphore, u64) {
+        self.item.front().unwrap()
+    }
+
+    pub fn data_mut(&mut self) -> &mut (vk::CommandBuffer, vk::Semaphore, u64) {
+        self.item.front_mut().unwrap()
+    }
+}
+
+#[derive(Debug)]
+pub struct CommandBufferPool {
+    pool: vk::CommandPool,
+    buffers: RefCell<LinkedList<(vk::CommandBuffer, vk::Semaphore, u64)>>,
+    length: usize,
+}
+
+impl CommandBufferPool {
+    const GROW_BUFFERS: usize = 8;
+    const MAX_BUFFERS: usize = 128;
+
+    fn create_buffers(device: &Device, pool: vk::CommandPool) -> Result<LinkedList<(vk::CommandBuffer, vk::Semaphore, u64)>> {
+        let info = vk::CommandBufferAllocateInfo::builder()
+            .command_pool(pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(Self::GROW_BUFFERS as u32);
+        Ok(unsafe { device.allocate_command_buffers(&info)? }
+            .into_iter()
+            .map(|buffer| {
+                Ok((buffer, create_semaphore(device, 0)?, 0))
+            })
+            .collect::<Result<LinkedList<_>>>()?)
+    }
+
+    pub fn new(device: &Device, queue_family: u32) -> Result<Self> {
+        let info = vk::CommandPoolCreateInfo::builder()
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+            .queue_family_index(queue_family);
+        let pool = unsafe { device.create_command_pool(&info, None)? };
+        let buffers = Self::create_buffers(device, pool)?;
+        Ok(Self {
+            pool,
+            length: buffers.len(),
+            buffers: RefCell::new(buffers),
+        })
+    }
+
+    pub unsafe fn destroy(&mut self, device: &Device) {
+        unsafe {
+            for (buffer, semaphore, _) in self.buffers.take() {
+                device.reset_command_buffer(buffer, vk::CommandBufferResetFlags::RELEASE_RESOURCES)
+                    .expect("failed to reset command buffer");
+                device.free_command_buffers(self.pool, &[buffer]);
+                device.destroy_semaphore(semaphore, None);
+            }
+
+            device.destroy_command_pool(self.pool, None);
+        }
+    }
+
+    fn next_command_buffer(&self, device: &Device) -> Result<PooledCommandBuffer> {
+        let mut buffers = self.buffers.borrow_mut();
+        let mut cur = buffers.cursor_front_mut();
+        loop {
+            let Some((_, semaphore, count)) = cur.current() else { break };
+            if unsafe { device.get_semaphore_counter_value_khr(*semaphore)? } >= *count {
+                let item = cur.remove_current_as_list().unwrap();
+                return Ok(PooledCommandBuffer {
+                    item,
+                });
+            }
+            cur.move_next();
+        }
+        if self.length >= Self::MAX_BUFFERS {
+            return Err(anyhow!("out of command buffers"));
+        }
+        let mut new_buffers = Self::create_buffers(device, self.pool)?;
+        let item = new_buffers.cursor_front_mut().remove_current_as_list().unwrap();
+        buffers.append(&mut new_buffers);
+        Ok(PooledCommandBuffer {
+            item,
+        })
+    }
+
+    pub fn acquire(&self, device: &Device) -> Result<PooledCommandBuffer> {
+        let buffer = self.next_command_buffer(device)?;
+        unsafe { device.reset_command_buffer(buffer.data().0, vk::CommandBufferResetFlags::empty())? };
+        Ok(buffer)
+    }
+
+    pub fn release(&self, _device: &Device, buffer: PooledCommandBuffer) {
+        self.buffers.borrow_mut().cursor_back_mut().splice_after(buffer.item);
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub struct QueueFamilies {
     pub graphics: u32,
@@ -35,36 +145,29 @@ pub struct QueueFamilies {
 pub struct Queues {
     graphics: vk::Queue,
     present: vk::Queue,
-    graphics_pool: vk::CommandPool,
+    graphics_pool: CommandBufferPool,
 }
 
 impl Queues {
     pub fn new(device: &Device, families: QueueFamilies) -> Result<Self> {
-        let graphics_pool_info = vk::CommandPoolCreateInfo::builder()
-            .flags(vk::CommandPoolCreateFlags::TRANSIENT)
-            .queue_family_index(families.graphics);
-        Ok(unsafe {
-            Self {
+        unsafe {
+            Ok(Self {
                 graphics: device.get_device_queue(families.graphics, 0),
                 present: device.get_device_queue(families.present, 0),
-                graphics_pool: device.create_command_pool(&graphics_pool_info, None)?,
-            }
-        })
+                graphics_pool: CommandBufferPool::new(device, families.graphics)?,
+            })
+        }
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {
-        unsafe { device.destroy_command_pool(self.graphics_pool, None) };
+        unsafe { self.graphics_pool.destroy(device) };
     }
 
-    pub fn raw_graphics(&self) -> vk::Queue {
-        self.graphics
-    }
-
-    pub fn graphics(&self) -> Queue<'_> {
+    pub fn graphics<'a>(&'a self, gpu: &'a Gpu) -> Queue<'a> {
         Queue {
             queue: self.graphics,
-            command_pool: self.graphics_pool,
-            gpu: None,
+            command_pool: &self.graphics_pool,
+            gpu: Some(gpu),
         }
     }
 
