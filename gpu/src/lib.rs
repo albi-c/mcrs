@@ -3,13 +3,14 @@
 mod vulkan;
 
 use std::alloc::Layout;
+use std::cell::RefCell;
 use anyhow::Result;
 use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use smart_default::SmartDefault;
 use vulkanalia::{vk, Device, Instance, Version};
-use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
-use crate::vulkan::{create_logical_device, create_shader, find_suitable_device, QueueFamilies, Swapchain};
+use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
+use crate::vulkan::{create_logical_device, create_shader, create_swapchain, find_suitable_device, QueueFamilies, Queues, Swapchain};
 
 pub const VALIDATION_LAYER: vk::ExtensionName = vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
 
@@ -185,7 +186,6 @@ pub enum Signal {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum QueueType {
     Graphics,
-    Present,
     Compute,
     Transfer,
 }
@@ -429,52 +429,83 @@ pub struct BlendState<'a> {
 pub struct Queue<'a> {
     queue: vk::Queue,
     command_pool: vk::CommandPool,
-    gpu: &'a Gpu,
+    // if None, command pool is not destroyed on Drop
+    gpu: Option<&'a Gpu>,
 }
 
 impl<'a> Queue<'a> {
-    pub fn create_buffer<'b>(&'b self) -> Result<CommandBuffer<'a>> {
+    pub fn create_buffer(&self) -> Result<CommandBuffer<'_>> {
+        self.create_buffer_gpu(self.gpu.unwrap())
+    }
+
+    fn create_buffer_gpu(&self, gpu: &'a Gpu) -> Result<CommandBuffer<'_>> {
         let info = vk::CommandBufferAllocateInfo::builder()
             .command_pool(self.command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(1);
         Ok(CommandBuffer {
-            buffer: unsafe { self.gpu.device.allocate_command_buffers(&info)?[0] },
-            gpu: self.gpu,
+            buffer: unsafe { gpu.device.allocate_command_buffers(&info)?[0] },
+            queue: self,
+            gpu,
         })
     }
 
-    pub fn submit<'b>(&self, buffer: &'b CommandBuffer<'a>, wait_semaphore: &Semaphore<'a>,
-                      signal_semaphore: &Semaphore<'a>) -> Result<()> where 'a: 'b {
-        let wait_semaphores = [wait_semaphore.semaphore];
-        let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+    pub fn submit<'b>(&self, buffer: &'b CommandBuffer<'a>, signal_semaphore: &Semaphore<'a>,
+                      signal_value: u64) -> Result<()> where 'a: 'b {
+        self.submit_gpu(self.gpu.unwrap(), buffer, signal_semaphore, signal_value)
+    }
+
+    pub fn submit_no_signal<'b>(&self, buffer: &'b CommandBuffer<'a>) -> Result<()> where 'a: 'b {
+        let command_buffers = [buffer.buffer];
+        let info = vk::SubmitInfo::builder()
+            .command_buffers(&command_buffers);
+
+        unsafe { self.gpu.unwrap().device.queue_submit(self.queue, &[info], vk::Fence::null())? };
+
+        Ok(())
+    }
+
+    fn submit_gpu<'b>(&self, gpu: &Gpu, buffer: &'b CommandBuffer<'a>, signal_semaphore: &Semaphore<'a>,
+                      signal_value: u64) -> Result<()> where 'a: 'b {
+        let signal_values = [signal_value];
+        let mut semaphore_info = vk::TimelineSemaphoreSubmitInfo::builder()
+            .signal_semaphore_values(&signal_values);
+
         let command_buffers = [buffer.buffer];
         let signal_semaphores = [signal_semaphore.semaphore];
         let info = vk::SubmitInfo::builder()
-            .wait_semaphores(&wait_semaphores)
-            .wait_dst_stage_mask(&wait_stages)
             .command_buffers(&command_buffers)
-            .signal_semaphores(&signal_semaphores);
-        unsafe { self.gpu.device.queue_submit(self.queue, &[info], vk::Fence::null())? };
+            .signal_semaphores(&signal_semaphores)
+            .push_next(&mut semaphore_info);
+
+        unsafe { gpu.device.queue_submit(self.queue, &[info], vk::Fence::null())? };
+
         Ok(())
     }
 }
 
 impl<'a> Drop for Queue<'a> {
     fn drop(&mut self) {
-        unsafe { self.gpu.device.destroy_command_pool(self.command_pool, None); }
+        if let Some(gpu) = self.gpu {
+            unsafe { gpu.device.destroy_command_pool(self.command_pool, None); }
+        }
     }
 }
 
 #[derive(Debug)]
 pub struct CommandBuffer<'a> {
     buffer: vk::CommandBuffer,
+    queue: &'a Queue<'a>,
     gpu: &'a Gpu,
 }
 
 impl<'a> Drop for CommandBuffer<'a> {
     fn drop(&mut self) {
-        // TODO: destroy
+        unsafe {
+            self.gpu.device.reset_command_buffer(self.buffer, vk::CommandBufferResetFlags::RELEASE_RESOURCES)
+                .expect("failed to reset command buffer");
+            self.gpu.device.free_command_buffers(self.queue.command_pool, &[self.buffer]);
+        }
     }
 }
 
@@ -587,14 +618,14 @@ impl<'a> CommandBuffer<'a> {
 
     pub fn begin_render_pass(&mut self, desc: &RenderPassDesc, framebuffer: usize) {
         let render_area_size = if desc.render_area_size == (0, 0) {
-            self.gpu.swapchain.extent
+            self.gpu.swapchain.borrow().extent
         } else {
             vk::Extent2D { width: desc.render_area_size.0, height: desc.render_area_size.1 }
         };
 
         self.image_barrier(
             vk::ImageLayout::UNDEFINED, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            self.gpu.swapchain.images[framebuffer]);
+            self.gpu.swapchain.borrow().images[framebuffer]);
 
         let render_area = vk::Rect2D::builder()
             .offset(vk::Offset2D { x: desc.render_area_offset.0, y: desc.render_area_offset.1 })
@@ -607,7 +638,7 @@ impl<'a> CommandBuffer<'a> {
         };
 
         let color_attachment = vk::RenderingAttachmentInfoKHR::builder()
-            .image_view(self.gpu.swapchain.image_views[framebuffer])
+            .image_view(self.gpu.swapchain.borrow().image_views[framebuffer])
             .image_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::STORE)
@@ -667,7 +698,7 @@ impl<'a> CommandBuffer<'a> {
 
         self.image_barrier(
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR,
-            self.gpu.swapchain.images[framebuffer]);
+            self.gpu.swapchain.borrow().images[framebuffer]);
     }
 
     pub fn draw_instanced(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
@@ -712,8 +743,14 @@ impl<'a> Drop for Semaphore<'a> {
 }
 
 impl<'a> Semaphore<'a> {
-    pub fn wait(&self, value: u64) {
-        todo!()
+    pub fn wait(&self, value: u64) -> Result<()> {
+        let semaphores = [self.semaphore];
+        let values = [value];
+        let info = vk::SemaphoreWaitInfo::builder()
+            .semaphores(&semaphores)
+            .values(&values);
+        unsafe { self.gpu.device.wait_semaphores_khr(&info, u64::MAX)? };
+        Ok(())
     }
 }
 
@@ -733,22 +770,37 @@ impl<'a> Drop for Shader<'a> {
 #[derive(Debug)]
 pub struct Gpu {
     pub(crate) queue_families: QueueFamilies,
+    pub(crate) internal_queues: Queues,
+    pub(crate) physical_device: vk::PhysicalDevice,
     pub(crate) device: Device,
     pub(crate) surface: vk::SurfaceKHR,
-    pub(crate) swapchain: Swapchain,
+    pub(crate) swapchain: RefCell<Swapchain>,
 }
 
 impl Gpu {
     pub fn new(instance: &Instance, surface: vk::SurfaceKHR, window_size: (u32, u32)) -> Result<Self> {
         let (physical_device, queue_families) = find_suitable_device(instance, surface)?;
-        let (logical_device, swapchain) = create_logical_device(
-            instance, physical_device, queue_families, surface, window_size)?;
+        let logical_device = create_logical_device(instance, physical_device, queue_families)?;
+        let internal_queues = Queues::new(&logical_device, queue_families)?;
+        let swapchain = create_swapchain(
+            instance, physical_device, surface, window_size, queue_families, &logical_device)?;
         Ok(Self {
             queue_families,
+            internal_queues,
+            physical_device,
             device: logical_device,
             surface,
-            swapchain,
+            swapchain: RefCell::new(swapchain),
         })
+    }
+
+    pub fn recreate_swapchain(&self, instance: &Instance, window_size: (u32, u32)) -> Result<()> {
+        let swapchain = create_swapchain(
+            instance, self.physical_device, self.surface, window_size, self.queue_families, &self.device)?;
+        unsafe { self.device.device_wait_idle()? };
+        let mut old_swapchain = self.swapchain.replace(swapchain);
+        unsafe { old_swapchain.destroy(&self.device) };
+        Ok(())
     }
 
     pub fn wait_before_destroy(&self) {
@@ -759,7 +811,8 @@ impl Gpu {
 
     pub unsafe fn destroy(&mut self, instance: &Instance) {
         unsafe {
-            self.swapchain.destroy(&self.device);
+            self.swapchain.borrow_mut().destroy(&self.device);
+            self.internal_queues.destroy(&self.device);
             self.device.destroy_device(None);
             instance.destroy_surface_khr(self.surface, None);
         }
@@ -804,13 +857,20 @@ impl Gpu {
         todo!()
     }
 
-    pub fn create_queue(&self, ty: QueueType, index: u32) -> Result<Queue<'_>> {
-        let family = match ty {
+    fn get_queue_family(&self, ty: QueueType) -> u32 {
+        match ty {
             QueueType::Graphics => self.queue_families.graphics,
-            QueueType::Present => self.queue_families.present,
             _ => panic!("unsupported queue type: {:?}", ty),
-        };
-        let queue = unsafe { self.device.get_device_queue(family, index) };
+        }
+    }
+
+    fn get_queue(&self, family: u32) -> vk::Queue {
+        unsafe { self.device.get_device_queue(family, 0) }
+    }
+
+    pub fn create_queue(&self, ty: QueueType) -> Result<Queue<'_>> {
+        let family = self.get_queue_family(ty);
+        let queue = self.get_queue(family);
 
         let pool_info = vk::CommandPoolCreateInfo::builder()
             .flags(vk::CommandPoolCreateFlags::TRANSIENT)
@@ -820,36 +880,90 @@ impl Gpu {
         Ok(Queue {
             queue,
             command_pool,
-            gpu: self,
+            gpu: Some(self),
         })
     }
 
-    pub fn create_semaphore(&self) -> Result<Semaphore<'_>> {
-        let info = vk::SemaphoreCreateInfo::builder();
+    pub fn create_semaphore(&self, value: u64) -> Result<Semaphore<'_>> {
+        let mut init_info = vk::SemaphoreTypeCreateInfo::builder()
+            .semaphore_type(vk::SemaphoreType::TIMELINE)
+            .initial_value(value);
+        let info = vk::SemaphoreCreateInfo::builder()
+            .push_next(&mut init_info);
         Ok(Semaphore {
             semaphore: unsafe { self.device.create_semaphore(&info, None) }?,
             gpu: self,
         })
     }
 
-    pub fn next_swapchain_image(&self, image_available_semaphore: &Semaphore<'_>) -> Result<usize> {
-        Ok(unsafe { self.device.acquire_next_image_khr(
-            self.swapchain.swapchain,
-            u64::MAX,
-            image_available_semaphore.semaphore,
-            vk::Fence::null(),
-        )?.0 as usize })
+    pub fn next_swapchain_image(&self) -> Result<usize> {
+        let fence_info = vk::FenceCreateInfo::builder();
+        let fence = unsafe { self.device.create_fence(&fence_info, None)? };
+
+        let mut swapchain = self.swapchain.borrow_mut();
+
+        let next_image_index = unsafe {
+            self.device.acquire_next_image_khr(
+                swapchain.swapchain,
+                u64::MAX,
+                vk::Semaphore::null(),
+                fence,
+            )?.0 as usize
+        };
+        swapchain.image_index = next_image_index;
+
+        unsafe {
+            self.device.wait_for_fences(&[fence], true, u64::MAX)?;
+            self.device.destroy_fence(fence, None);
+        }
+
+        // TODO: move image layout transition here
+
+        Ok(next_image_index)
     }
 
-    pub fn swapchain_present(&self, image_index: usize, present_queue: &Queue<'_>, render_finished_semaphore: &Semaphore<'_>) -> Result<()> {
-        let wait_semaphores = [render_finished_semaphore.semaphore];
-        let swapchains = [self.swapchain.swapchain];
+    pub fn swapchain_present(&self, wait_semaphore: &Semaphore<'_>, wait_value: u64) -> Result<()> {
+        let swapchain = self.swapchain.borrow();
+
+        let image_index = swapchain.image_index;
+        let present_semaphore = swapchain.present_semaphores[image_index];
+
+        let graphics_queue = self.internal_queues.graphics();
+        let mut cmd_buf = graphics_queue.create_buffer_gpu(self)?;
+        cmd_buf.begin_recording()?;
+
+        // TODO: move image layout transition here
+
+        cmd_buf.end_recording()?;
+
+        let wait_semaphore_values = [wait_value];
+        let mut semaphore_info = vk::TimelineSemaphoreSubmitInfo::builder()
+            .wait_semaphore_values(&wait_semaphore_values);
+
+        let command_buffers = [cmd_buf.buffer];
+        let wait_semaphores = [wait_semaphore.semaphore];
+        let wait_stage_flags = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let signal_semaphores = [present_semaphore];
+        let submit_info = vk::SubmitInfo::builder()
+            .command_buffers(&command_buffers)
+            .wait_semaphores(&wait_semaphores)
+            .wait_dst_stage_mask(&wait_stage_flags)
+            .signal_semaphores(&signal_semaphores)
+            .push_next(&mut semaphore_info);
+
+        let wait_semaphores = [present_semaphore];
+        let swapchains = [swapchain.swapchain];
         let image_indices = [image_index as u32];
         let info = vk::PresentInfoKHR::builder()
             .wait_semaphores(&wait_semaphores)
             .swapchains(&swapchains)
             .image_indices(&image_indices);
-        unsafe { self.device.queue_present_khr(present_queue.queue, &info)? };
+
+        unsafe {
+            self.device.queue_submit(self.internal_queues.raw_graphics(), &[submit_info], vk::Fence::null())?;
+            self.device.queue_present_khr(self.internal_queues.present(), &info)?;
+        }
+
         Ok(())
     }
 }

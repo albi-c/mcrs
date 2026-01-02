@@ -3,7 +3,7 @@ use std::ffi::{c_void, CStr};
 use anyhow::{anyhow, Result};
 use vulkanalia::{vk, Device, Instance};
 use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, InstanceV1_0, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
-use crate::{need_portability_ext, validation_enabled, Gpu, Shader, ShaderStage, VALIDATION_LAYER};
+use crate::{need_portability_ext, validation_enabled, Gpu, Queue, Shader, ShaderStage, VALIDATION_LAYER};
 
 const FEATURE_REQUIREMENTS: &[(fn(&vk::PhysicalDeviceFeatures) -> vk::Bool32, &str)] = &[
     (|f| f.shader_int64, "shader int64"),
@@ -22,12 +22,55 @@ const EXTENSION_REQUIREMENTS: &[vk::ExtensionName] = &[
     vk::KHR_DEPTH_STENCIL_RESOLVE_EXTENSION.name,
     vk::KHR_DYNAMIC_RENDERING_EXTENSION.name,
     vk::EXT_SHADER_OBJECT_EXTENSION.name,
+    vk::KHR_TIMELINE_SEMAPHORE_EXTENSION.name,
 ];
 
 #[derive(Debug, Copy, Clone)]
 pub struct QueueFamilies {
     pub graphics: u32,
     pub present: u32,
+}
+
+#[derive(Debug)]
+pub struct Queues {
+    graphics: vk::Queue,
+    present: vk::Queue,
+    graphics_pool: vk::CommandPool,
+}
+
+impl Queues {
+    pub fn new(device: &Device, families: QueueFamilies) -> Result<Self> {
+        let graphics_pool_info = vk::CommandPoolCreateInfo::builder()
+            .flags(vk::CommandPoolCreateFlags::TRANSIENT)
+            .queue_family_index(families.graphics);
+        Ok(unsafe {
+            Self {
+                graphics: device.get_device_queue(families.graphics, 0),
+                present: device.get_device_queue(families.present, 0),
+                graphics_pool: device.create_command_pool(&graphics_pool_info, None)?,
+            }
+        })
+    }
+
+    pub unsafe fn destroy(&mut self, device: &Device) {
+        unsafe { device.destroy_command_pool(self.graphics_pool, None) };
+    }
+
+    pub fn raw_graphics(&self) -> vk::Queue {
+        self.graphics
+    }
+
+    pub fn graphics(&self) -> Queue<'_> {
+        Queue {
+            queue: self.graphics,
+            command_pool: self.graphics_pool,
+            gpu: None,
+        }
+    }
+
+    pub fn present(&self) -> vk::Queue {
+        self.present
+    }
 }
 
 fn rank_device(instance: &Instance, device: vk::PhysicalDevice) -> usize {
@@ -59,8 +102,8 @@ impl SwapchainSupport {
     }
 }
 
-fn create_swapchain(instance: &Instance, physical_device: vk::PhysicalDevice, surface: vk::SurfaceKHR,
-                    window_size: (u32, u32), queue_families: QueueFamilies, device: &Device) -> Result<Swapchain> {
+pub fn create_swapchain(instance: &Instance, physical_device: vk::PhysicalDevice, surface: vk::SurfaceKHR,
+                        window_size: (u32, u32), queue_families: QueueFamilies, device: &Device) -> Result<Swapchain> {
     let support = SwapchainSupport::get(instance, physical_device, surface)?;
 
     let surface_format = support.formats
@@ -122,12 +165,19 @@ fn create_swapchain(instance: &Instance, physical_device: vk::PhysicalDevice, su
     let images = unsafe { device.get_swapchain_images_khr(swapchain)? };
     let image_views = create_swapchain_image_views(device, &images, surface_format.format)?;
 
+    let semaphore_info = vk::SemaphoreCreateInfo::builder();
+    let present_semaphores = images.iter()
+        .map(|_| unsafe { device.create_semaphore(&semaphore_info, None) })
+        .collect::<Result<Vec<_>, _>>()?;
+
     Ok(Swapchain {
         swapchain,
         format: surface_format.format,
         extent,
         images,
         image_views,
+        present_semaphores,
+        image_index: 0,
     })
 }
 
@@ -223,6 +273,8 @@ pub struct Swapchain {
     pub extent: vk::Extent2D,
     pub images: Vec<vk::Image>,
     pub image_views: Vec<vk::ImageView>,
+    pub present_semaphores: Vec<vk::Semaphore>,
+    pub image_index: usize,
 }
 
 impl Swapchain {
@@ -230,6 +282,9 @@ impl Swapchain {
         unsafe {
             for view in self.image_views.drain(..) {
                 device.destroy_image_view(view, None);
+            }
+            for sem in self.present_semaphores.drain(..) {
+                device.destroy_semaphore(sem, None);
             }
             device.destroy_swapchain_khr(self.swapchain, None);
         }
@@ -268,8 +323,7 @@ pub fn create_debug_info_callback() -> vk::DebugUtilsMessengerCreateInfoEXTBuild
 }
 
 pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalDevice,
-                             queue_families: QueueFamilies, surface: vk::SurfaceKHR,
-                             window_size: (u32, u32)) -> Result<(Device, Swapchain)> {
+                             queue_families: QueueFamilies) -> Result<Device> {
     let unique_indices = HashSet::from([queue_families.graphics, queue_families.present]);
     let queue_priorities = [1.0];
     let queue_infos = unique_indices
@@ -312,7 +366,8 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
 
     let mut info_12 = vk::PhysicalDeviceVulkan12Features::builder()
         .runtime_descriptor_array(true)
-        .buffer_device_address(true);
+        .buffer_device_address(true)
+        .timeline_semaphore(true);
 
     let mut info_13 = vk::PhysicalDeviceVulkan13Features::builder()
         .dynamic_rendering(true)
@@ -331,9 +386,7 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         .push_next(&mut info_shader_object);
     let device = unsafe { instance.create_device(physical_device, &info, None)? };
 
-    let swapchain = create_swapchain(instance, physical_device, surface, window_size, queue_families, &device)?;
-
-    Ok((device, swapchain))
+    Ok(device)
 }
 
 // fn get_topology(topology: Topology) -> vk::PrimitiveTopology {
