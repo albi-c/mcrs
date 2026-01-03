@@ -4,7 +4,7 @@ use std::collections::{HashSet, LinkedList};
 use std::ffi::{c_void, CStr};
 use anyhow::{anyhow, Result};
 use vulkanalia::{vk, Device, Instance};
-use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, HasBuilder, InstanceV1_0, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
+use vulkanalia::vk::{DeviceV1_0, ExtDescriptorBufferExtensionDeviceCommands, ExtShaderObjectExtensionDeviceCommands, HasBuilder, InstanceV1_0, InstanceV1_1, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
 use crate::{need_portability_ext, validation_enabled, Gpu, Queue, Shader, ShaderStage, VALIDATION_LAYER};
 
 const FEATURE_REQUIREMENTS: &[(fn(&vk::PhysicalDeviceFeatures) -> vk::Bool32, &str)] = &[
@@ -207,6 +207,28 @@ impl PipelineLayout {
         unsafe {
             device.destroy_pipeline_layout(self.layout, None);
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct DescriptorSizes {
+    pub sampled_texture: usize,
+    pub sampler: usize,
+}
+
+impl DescriptorSizes {
+    pub fn new(instance: &Instance, device: vk::PhysicalDevice) -> Result<Self> {
+        let prop = {
+            let mut properties_ext = vk::PhysicalDeviceDescriptorBufferPropertiesEXT::default();
+            let mut properties = vk::PhysicalDeviceProperties2::builder()
+                .push_next(&mut properties_ext);
+            unsafe { instance.get_physical_device_properties2(device, &mut properties) };
+            properties_ext
+        };
+        Ok(Self {
+            sampled_texture: prop.sampled_image_descriptor_size,
+            sampler: prop.sampler_descriptor_size,
+        })
     }
 }
 
@@ -515,6 +537,9 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
     let mut info_shader_object = vk::PhysicalDeviceShaderObjectFeaturesEXT::builder()
         .shader_object(true);
 
+    let mut info_descriptor_buffer = vk::PhysicalDeviceDescriptorBufferFeaturesEXT::builder()
+        .descriptor_buffer(true);
+
     let info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(&queue_infos)
         .enabled_layer_names(&layers)
@@ -522,7 +547,8 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         .enabled_features(&features)
         .push_next(&mut info_12)
         .push_next(&mut info_13)
-        .push_next(&mut info_shader_object);
+        .push_next(&mut info_shader_object)
+        .push_next(&mut info_descriptor_buffer);
     let device = unsafe { instance.create_device(physical_device, &info, None)? };
 
     Ok(device)

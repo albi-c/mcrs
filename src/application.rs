@@ -42,6 +42,16 @@ impl<'a> Application<'a> {
 
         queue.submit_no_signal(command_buffer)?.wait();
 
+        let mut tex_descriptor = vec![0u8; tex.view_descriptor_size()];
+        tex.view_descriptor(&mut tex_descriptor)?;
+        println!("{tex_descriptor:?}");
+
+        let mut sampler_descriptor = vec![0u8; gpu.sampler_descriptor_size()];
+        gpu.sampler_descriptor(gpu::SamplerDesc {
+            ..Default::default()
+        }, &mut sampler_descriptor)?;
+        println!("{sampler_descriptor:?}");
+
         Ok(Self {
             gpu,
             vertex_shader: gpu.create_shader(include_bytes!("../shaders/vert.spv"), gpu::ShaderStage::Vertex)?,

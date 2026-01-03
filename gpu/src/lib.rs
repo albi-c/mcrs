@@ -14,10 +14,10 @@ use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use smart_default::SmartDefault;
 use vulkanalia::{vk, Device, Instance, Version};
-use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrBufferDeviceAddressExtensionDeviceCommands, KhrDynamicRenderingExtensionDeviceCommands, KhrMaintenance4ExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrSynchronization2ExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
+use vulkanalia::vk::{DeviceV1_0, ExtDescriptorBufferExtensionDeviceCommands, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrBufferDeviceAddressExtensionDeviceCommands, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrSynchronization2ExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
 use vulkanalia_vma as vma;
 use vulkanalia_vma::Alloc;
-use crate::vulkan::{create_logical_device, create_semaphore, create_shader, create_swapchain, find_suitable_device, get_sample_count_flag, CommandBufferPool, PipelineLayout, PooledCommandBuffer, QueueFamilies, Queues, Swapchain};
+use crate::vulkan::{create_logical_device, create_semaphore, create_shader, create_swapchain, find_suitable_device, get_sample_count_flag, CommandBufferPool, DescriptorSizes, PipelineLayout, PooledCommandBuffer, QueueFamilies, Queues, Swapchain};
 
 pub use vulkan::create_debug_info_callback;
 pub use crate::arena::Arena;
@@ -223,6 +223,28 @@ pub enum IndexType {
     U32 = vk::IndexType::UINT32.as_raw(),
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(i32)]
+pub enum Filter {
+    Linear = vk::Filter::LINEAR.as_raw(),
+    Nearest = vk::Filter::NEAREST.as_raw(),
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(i32)]
+pub enum MipmapMode {
+    Linear = vk::SamplerMipmapMode::LINEAR.as_raw(),
+    Nearest = vk::SamplerMipmapMode::NEAREST.as_raw(),
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(i32)]
+pub enum TextureWrap {
+    Repeat = vk::SamplerAddressMode::REPEAT.as_raw(),
+    MirroredRepeat = vk::SamplerAddressMode::MIRRORED_REPEAT.as_raw(),
+    ClampToEdge = vk::SamplerAddressMode::CLAMP_TO_EDGE.as_raw(),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
 pub struct Stencil {
     #[default(Op::Always)]
@@ -339,6 +361,22 @@ pub struct TextureDesc {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
+pub struct SamplerDesc {
+    #[default(Filter::Linear)]
+    pub min_filter: Filter,
+    #[default(Filter::Linear)]
+    pub mag_filter: Filter,
+    #[default(MipmapMode::Linear)]
+    pub mip_mode: MipmapMode,
+    #[default(TextureWrap::Repeat)]
+    pub wrap_u: TextureWrap,
+    #[default(TextureWrap::Repeat)]
+    pub wrap_v: TextureWrap,
+    #[default(TextureWrap::Repeat)]
+    pub wrap_w: TextureWrap,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
 pub struct ViewDesc {
     #[default(Format::None)]
     pub format: Format,
@@ -351,22 +389,6 @@ pub struct ViewDesc {
     #[default = 0xffff]
     pub layer_count: u16,
 }
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-#[repr(C)]
-pub struct TextureSizeAlign {
-    pub size: usize,
-    pub align: usize,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-#[repr(C)]
-pub struct TextureDescriptor {
-    pub data: [u64; 4],
-}
-
-unsafe impl Zeroable for TextureDescriptor {}
-unsafe impl Pod for TextureDescriptor {}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]
 pub struct DevicePointer(vk::DeviceAddress);
@@ -466,16 +488,61 @@ impl<'a, T: Pod> MemoryAllocation for Allocation<'a, T> {
 pub struct Texture<'a> {
     dimensions: (u32, u32, u32),
     format: Format,
+    ty: TextureType,
     image: vk::Image,
     allocation: vma::Allocation,
     gpu: &'a Gpu,
 }
 
 impl<'a> Texture<'a> {
-    pub fn view_descriptor(&self) -> TextureDescriptor {
-        todo!()
+    pub fn dimensions(&self) -> (u32, u32, u32) {
+        self.dimensions
     }
-    pub fn rw_view_descriptor(&self) -> TextureDescriptor {
+
+    fn view_type(ty: TextureType) -> vk::ImageViewType {
+        match ty {
+            TextureType::Tex1D => vk::ImageViewType::_1D,
+            TextureType::Tex2D => vk::ImageViewType::_2D,
+            TextureType::Tex3D => vk::ImageViewType::_3D,
+        }
+    }
+
+    pub fn view_descriptor_size(&self) -> usize {
+        self.gpu.descriptor_sizes.sampled_texture
+    }
+
+    pub fn view_descriptor(&self, descriptor: &mut [u8]) -> Result<()> {
+        assert_eq!(descriptor.len(), self.view_descriptor_size(),
+                   "incorrect buffer size for texture descriptor");
+
+        let subresource_range = vk::ImageSubresourceRange::builder()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .level_count(1)
+            .layer_count(1);
+        let view_info = vk::ImageViewCreateInfo::builder()
+            .image(self.image)
+            .view_type(Self::view_type(self.ty))
+            .format(vk::Format::from_raw(self.format as i32))
+            .subresource_range(subresource_range);
+        let view = unsafe { self.gpu.device.create_image_view(&view_info, None)? };
+
+        let image_info = vk::DescriptorImageInfo::builder()
+            .sampler(vk::Sampler::null())
+            .image_view(view)
+            .image_layout(vk::ImageLayout::GENERAL)
+            .build();
+        let info = vk::DescriptorGetInfoEXT::builder()
+            .type_(vk::DescriptorType::SAMPLED_IMAGE)
+            .data(vk::DescriptorDataEXT {
+                sampled_image: &raw const image_info,
+            });
+        unsafe { self.gpu.device.get_descriptor_ext(&info, descriptor) };
+
+        unsafe { self.gpu.device.destroy_image_view(view, None) };
+
+        Ok(())
+    }
+    pub fn rw_view_descriptor(&self) -> Result<()> {
         todo!()
     }
 }
@@ -908,6 +975,7 @@ pub struct Gpu {
     pub(crate) allocator: Option<vma::Allocator>,
     pub(crate) buffers: RefCell<BTreeMap<vk::DeviceAddress, (vk::Buffer, vk::DeviceSize)>>,
     pub(crate) pipeline_layout: PipelineLayout,
+    pub(crate) descriptor_sizes: DescriptorSizes,
 }
 
 impl Gpu {
@@ -933,6 +1001,7 @@ impl Gpu {
             pipeline_layout: PipelineLayout::new(&logical_device)?,
             device: logical_device,
             buffers: RefCell::new(BTreeMap::new()),
+            descriptor_sizes: DescriptorSizes::new(instance, physical_device)?,
         })
     }
 
@@ -1151,10 +1220,44 @@ impl Gpu {
         Ok(Texture {
             dimensions: desc.dimensions,
             format: desc.format,
+            ty: desc.ty,
             image,
             allocation,
             gpu: self,
         })
+    }
+
+    pub fn sampler_descriptor_size(&self) -> usize {
+        self.descriptor_sizes.sampler
+    }
+    pub fn sampler_descriptor(&self, desc: SamplerDesc, descriptor: &mut [u8]) -> Result<()> {
+        assert_eq!(descriptor.len(), self.descriptor_sizes.sampler,
+                   "incorrect buffer size for sampler descriptor");
+
+        let sampler_info = vk::SamplerCreateInfo::builder()
+            .mag_filter(vk::Filter::from_raw(desc.mag_filter as i32))
+            .min_filter(vk::Filter::from_raw(desc.min_filter as i32))
+            .mipmap_mode(vk::SamplerMipmapMode::from_raw(desc.mip_mode as i32))
+            .address_mode_u(vk::SamplerAddressMode::from_raw(desc.wrap_u as i32))
+            .address_mode_v(vk::SamplerAddressMode::from_raw(desc.wrap_v as i32))
+            .address_mode_w(vk::SamplerAddressMode::from_raw(desc.wrap_w as i32));
+        let sampler = unsafe { self.device.create_sampler(&sampler_info, None) }?;
+
+        let image_info = vk::DescriptorImageInfo::builder()
+            .sampler(sampler)
+            .image_view(vk::ImageView::null())
+            .image_layout(vk::ImageLayout::GENERAL)
+            .build();
+        let info = vk::DescriptorGetInfoEXT::builder()
+            .type_(vk::DescriptorType::SAMPLER)
+            .data(vk::DescriptorDataEXT {
+                sampled_image: &raw const image_info,
+            });
+        unsafe { self.device.get_descriptor_ext(&info, descriptor) };
+
+        unsafe { self.device.destroy_sampler(sampler, None) };
+
+        Ok(())
     }
 
     pub fn create_shader(&self, spirv: &[u8], stage: ShaderStage) -> Result<Shader<'_>> {
