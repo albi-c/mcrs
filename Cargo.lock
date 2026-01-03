@@ -457,6 +457,7 @@ dependencies = [
  "log",
  "smart-default",
  "vulkanalia",
+ "vulkanalia-vma",
 ]
 
 [[package]]
@@ -1195,6 +1196,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e09d7a84fabf69939d58b472eac8dfff624b8ce408c82de0f9fa60be401930e"
 dependencies = [
  "bitflags 1.3.2",
+]
+
+[[package]]
+name = "vulkanalia-vma"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9275bd80a849d9e24ebd0d156f03319555d0ca0123368b6ee6f7b8ac9576c7d4"
+dependencies = [
+ "bitflags 2.10.0",
+ "cc",
+ "vulkanalia",
 ]
 
 [[package]]

@@ -8,5 +8,6 @@ bytemuck = { workspace = true }
 bitflags = "2.10.0"
 smart-default = "0.7.1"
 vulkanalia = { workspace = true }
+vulkanalia-vma = "0.8.0"
 anyhow = { workspace = true }
 log = { workspace = true }

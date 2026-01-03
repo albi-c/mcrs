@@ -1,3 +1,4 @@
+use std::alloc::Layout;
 use std::cell::RefCell;
 use std::collections::{HashSet, LinkedList};
 use std::ffi::{c_void, CStr};
@@ -24,6 +25,9 @@ const EXTENSION_REQUIREMENTS: &[vk::ExtensionName] = &[
     vk::KHR_DYNAMIC_RENDERING_EXTENSION.name,
     vk::EXT_SHADER_OBJECT_EXTENSION.name,
     vk::KHR_TIMELINE_SEMAPHORE_EXTENSION.name,
+    vk::KHR_MAINTENANCE3_EXTENSION.name,
+    vk::EXT_DESCRIPTOR_INDEXING_EXTENSION.name,
+    vk::EXT_DESCRIPTOR_BUFFER_EXTENSION.name,
 ];
 
 pub fn create_semaphore(device: &Device, value: u64) -> Result<vk::Semaphore> {
@@ -471,7 +475,8 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
     let mut info_12 = vk::PhysicalDeviceVulkan12Features::builder()
         .runtime_descriptor_array(true)
         .buffer_device_address(true)
-        .timeline_semaphore(true);
+        .timeline_semaphore(true)
+        .descriptor_indexing(true);
 
     let mut info_13 = vk::PhysicalDeviceVulkan13Features::builder()
         .dynamic_rendering(true)
@@ -550,17 +555,27 @@ fn get_next_stage(stage: ShaderStage) -> vk::ShaderStageFlags {
 }
 
 pub fn create_shader<'a>(gpu: &'a Gpu, spirv: &[u8], stage: ShaderStage) -> Result<Shader<'a>> {
+    let length = (spirv.len() + 3) & !3;
+    let layout = Layout::array::<u8>(length)?.align_to(4)?;
+    let mem = unsafe { std::alloc::alloc(layout) };
+    let buffer = unsafe { std::slice::from_raw_parts_mut(mem, length) };
+    buffer[..spirv.len()].copy_from_slice(spirv);
+
     let vk_stage = get_stage(stage);
     let info = vk::ShaderCreateInfoEXT::builder()
         .stage(vk_stage)
         .next_stage(get_next_stage(stage))
-        .code(spirv)
+        .code(buffer)
         .code_type(vk::ShaderCodeTypeEXT::SPIRV)
         .name(b"main\0");
 
     let infos = [info];
+    let shader = unsafe { gpu.device.create_shaders_ext(&infos, None)?.0[0] };
+
+    unsafe { std::alloc::dealloc(mem, layout) };
+
     Ok(Shader {
-        shader: unsafe { gpu.device.create_shaders_ext(&infos, None)?.0[0] },
+        shader,
         stage: vk_stage,
         gpu,
     })

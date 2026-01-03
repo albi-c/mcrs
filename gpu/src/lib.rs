@@ -1,17 +1,26 @@
 #![feature(try_find)]
 #![feature(linked_list_cursors)]
+#![feature(btree_cursors)]
 
 mod vulkan;
+mod arena;
 
 use std::alloc::Layout;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
+use std::ops::Bound;
 use anyhow::Result;
 use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use smart_default::SmartDefault;
 use vulkanalia::{vk, Device, Instance, Version};
-use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
+use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrBufferDeviceAddressExtensionDeviceCommands, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
+use vulkanalia_vma as vma;
+use vulkanalia_vma::Alloc;
 use crate::vulkan::{create_logical_device, create_semaphore, create_shader, create_swapchain, find_suitable_device, CommandBufferPool, PooledCommandBuffer, QueueFamilies, Queues, Swapchain};
+
+pub use vulkan::create_debug_info_callback;
+pub use crate::arena::Arena;
 
 pub const VALIDATION_LAYER: vk::ExtensionName = vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
 
@@ -210,6 +219,13 @@ pub enum ShaderStage {
     Pixel,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(i32)]
+pub enum IndexType {
+    U16 = vk::IndexType::UINT16.as_raw(),
+    U32 = vk::IndexType::UINT32.as_raw(),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
 pub struct Stencil {
     #[default(Op::Always)]
@@ -356,15 +372,15 @@ unsafe impl Zeroable for TextureDescriptor {}
 unsafe impl Pod for TextureDescriptor {}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct DevicePointer(u64);
+pub struct DevicePointer(vk::DeviceAddress);
 
 impl DevicePointer {
-    pub fn to_raw(self) -> u64 {
+    pub fn to_raw(self) -> vk::DeviceAddress {
         self.0
     }
 
     pub fn add(self, offset: usize) -> DevicePointer {
-        DevicePointer(self.0 + offset as u64)
+        DevicePointer(self.0 + vk::DeviceAddress::try_from(offset).expect("offset too large"))
     }
 }
 
@@ -374,30 +390,64 @@ impl From<DevicePointer> for u64 {
     }
 }
 
+pub trait MemoryAllocation {
+    type Type: Zeroable;
+
+    fn host(&self) -> &[Self::Type];
+    fn host_mut(&mut self) -> &mut [Self::Type];
+    fn host_raw(&self) -> *mut Self::Type;
+
+    fn len(&self) -> usize;
+    fn len_bytes(&self) -> usize {
+        self.len() * size_of::<Self::Type>()
+    }
+
+    fn device(&self) -> DevicePointer;
+}
+
+pub trait MemoryAllocator {
+    type Allocation<T: Zeroable>: MemoryAllocation<Type = T>;
+
+    fn alloc<T: Zeroable>(&self, n: usize) -> Result<Self::Allocation<T>> {
+        self.alloc_aligned(n, 1)
+    }
+    fn alloc_aligned<T: Zeroable>(&self, n: usize, align: usize) -> Result<Self::Allocation<T>>;
+}
+
 #[derive(Debug)]
 pub struct Allocation<'a, T: Zeroable> {
     host: *mut T,
     device: DevicePointer,
     count: usize,
+    buffer: vk::Buffer,
+    allocation: vma::Allocation,
     gpu: &'a Gpu,
 }
 
-impl<'a, T: Zeroable> Allocation<'a, T> {
-    pub fn host(&self) -> &[T] {
+impl<'a, T: Zeroable> Drop for Allocation<'a, T> {
+    fn drop(&mut self) {
+        unsafe { self.gpu.dealloc(self) };
+    }
+}
+
+impl<'a, T: Zeroable> MemoryAllocation for Allocation<'a, T> {
+    type Type = T;
+
+    fn host(&self) -> &[Self::Type] {
         unsafe { std::slice::from_raw_parts(self.host, self.count) }
     }
-    pub fn host_mut(&mut self) -> &mut [T] {
+    fn host_mut(&mut self) -> &mut [Self::Type] {
         unsafe { std::slice::from_raw_parts_mut(self.host, self.count) }
     }
-    pub fn host_raw(&self) -> *mut T {
+    fn host_raw(&self) -> *mut Self::Type {
         self.host
     }
 
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.count
     }
 
-    pub fn device(&self) -> DevicePointer {
+    fn device(&self) -> DevicePointer {
         self.device
     }
 }
@@ -694,9 +744,23 @@ impl<'a> CommandBuffer<'a> {
         unsafe { self.gpu.device.cmd_draw(self.buffer, vertex_count, instance_count, first_vertex, first_instance) };
     }
 
-    pub fn draw_indexed_instanced(&mut self, vertex_data: DevicePointer, pixel_data: DevicePointer,
-                                  indices: DevicePointer, index_count: u32, instance_count: u32) {
-        todo!()
+    pub fn draw_indexed(&mut self, // vertex_data: DevicePointer, pixel_data: DevicePointer,
+                        indices: DevicePointer, index_count: u32, index_type: IndexType) {
+        self.draw_indexed_instanced(indices, index_count,
+                                    0, index_type, 0, 1, 0);
+    }
+    pub fn draw_indexed_instanced(&mut self, // vertex_data: DevicePointer, pixel_data: DevicePointer,
+                                  indices: DevicePointer, index_count: u32, first_index: u32,
+                                  index_type: IndexType, vertex_offset: i32, instance_count: u32,
+                                  first_instance: u32) {
+        let (buffer, offset) = self.gpu.device_addr_to_buffer_offset(indices)
+            .expect("invalid index buffer");
+        unsafe {
+            self.gpu.device.cmd_bind_index_buffer(self.buffer, buffer, offset,
+                                                  vk::IndexType::from_raw(index_type as i32));
+            self.gpu.device.cmd_draw_indexed(self.buffer, index_count, instance_count, first_index,
+                                             vertex_offset, first_instance);
+        }
     }
     pub fn draw_indexed_instanced_indirect(&mut self, vertex_data: DevicePointer, pixel_data: DevicePointer,
                                            indices: DevicePointer, args: DevicePointer) {
@@ -778,6 +842,8 @@ pub struct Gpu {
     pub(crate) device: Device,
     pub(crate) surface: vk::SurfaceKHR,
     pub(crate) swapchain: RefCell<Swapchain>,
+    pub(crate) allocator: Option<vma::Allocator>,
+    pub(crate) buffers: RefCell<BTreeMap<vk::DeviceAddress, (vk::Buffer, vk::DeviceSize)>>,
 }
 
 impl Gpu {
@@ -790,13 +856,18 @@ impl Gpu {
         let swapchain = create_swapchain(
             instance, physical_device, surface, window_size, queue_families,
             &logical_device, vk::SwapchainKHR::null())?;
+        let mut allocator_options = vma::AllocatorOptions::new(
+            instance, &logical_device, physical_device);
+        allocator_options.flags |= vma::AllocatorCreateFlags::BUFFER_DEVICE_ADDRESS;
         Ok(Self {
             queue_families,
             queues: internal_queues,
             physical_device,
-            device: logical_device,
             surface,
             swapchain: RefCell::new(swapchain),
+            allocator: Some(unsafe { vma::Allocator::new(&allocator_options)? }),
+            device: logical_device,
+            buffers: RefCell::new(BTreeMap::new()),
         })
     }
 
@@ -820,6 +891,7 @@ impl Gpu {
 
     pub unsafe fn destroy(&mut self, instance: &Instance) {
         unsafe {
+            drop(self.allocator.take().unwrap());
             self.swapchain.borrow_mut().destroy(&self.device);
             self.queues.destroy(&self.device);
             self.device.destroy_device(None);
@@ -827,16 +899,146 @@ impl Gpu {
         }
     }
 
-    unsafe fn alloc_layout<T: Zeroable>(&self, layout: Layout, memory: Memory) -> Allocation<'_, T> {
-        todo!()
+    unsafe fn alloc_layout<T: Zeroable>(&self, count: usize, layout: Layout, memory: Memory) -> Result<Allocation<'_, T>> {
+        let (properties, usage) = match memory {
+            Memory::Default => (
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                vma::MemoryUsage::AutoPreferDevice
+            ),
+            Memory::Gpu => (
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                vma::MemoryUsage::AutoPreferDevice,
+            ),
+            Memory::Readback => (
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_CACHED,
+                vma::MemoryUsage::AutoPreferDevice,
+            )
+        };
+        let buffer_usage = match memory {
+            Memory::Default | Memory::Readback =>
+                vk::BufferUsageFlags::RESOURCE_DESCRIPTOR_BUFFER_EXT
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                    | vk::BufferUsageFlags::INDEX_BUFFER
+                    | vk::BufferUsageFlags::STORAGE_BUFFER
+                    | vk::BufferUsageFlags::TRANSFER_SRC,
+            Memory::Gpu => vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::INDEX_BUFFER
+                | vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_DST,
+        };
+
+        let length = vk::DeviceSize::try_from(layout.size()).expect("buffer size too large");
+        let buffer_info = vk::BufferCreateInfo::builder()
+            .size(length)
+            .usage(buffer_usage)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+        let alloc_options = vma::AllocationOptions {
+            flags: vma::AllocationCreateFlags::HOST_ACCESS_RANDOM,
+            usage,
+            required_flags: properties,
+            ..Default::default()
+        };
+
+        let allocator = self.allocator.as_ref().expect("allocator dropped");
+        let (buffer, alloc) = unsafe {
+            allocator.create_buffer_with_alignment(
+                buffer_info, &alloc_options, layout.align().try_into()
+                    .expect("buffer alignment too large"))?
+        };
+        let mapping = unsafe { allocator.map_memory(alloc)? };
+
+        let addr_info = vk::BufferDeviceAddressInfo::builder()
+            .buffer(buffer);
+        let addr = unsafe { self.device.get_buffer_device_address_khr(&addr_info) };
+
+        assert!(self.buffers.borrow_mut().insert(addr, (buffer, length)).is_none(),
+                "device address returned twice");
+
+        Ok(Allocation {
+            host: mapping as *mut _,
+            device: DevicePointer(addr),
+            count,
+            buffer,
+            allocation: alloc,
+            gpu: self,
+        })
     }
 
-    pub fn alloc<T: Zeroable>(&self, n: usize, memory: Memory) -> Allocation<'_, T> {
-        unsafe { self.alloc_layout(Layout::array::<T>(n).unwrap(), memory) }
+    unsafe fn dealloc<T: Zeroable>(&self, alloc: &mut Allocation<'_, T>) {
+        self.buffers.borrow_mut().remove(&alloc.device.0);
+        let allocator = self.allocator.as_ref().expect("allocator dropped");
+        unsafe {
+            allocator.unmap_memory(alloc.allocation);
+            allocator.destroy_buffer(alloc.buffer, alloc.allocation);
+        }
     }
 
-    pub fn alloc_aligned<T: Zeroable>(&self, n: usize, align: usize, memory: Memory) -> Allocation<'_, T> {
-        unsafe { self.alloc_layout(Layout::array::<T>(n).unwrap().align_to(align).unwrap(), memory) }
+    fn device_addr_to_buffer_offset(&self, addr: DevicePointer) -> Option<(vk::Buffer, vk::DeviceSize)> {
+        let buffers = self.buffers.borrow();
+        let mut cur = buffers.lower_bound(Bound::Included(&addr.0));
+        if let Some((&base, &(buffer, size))) = cur.next() {
+            if base <= addr.0 && addr.0 < base + size {
+                return Some((buffer, addr.0 - base));
+            }
+        }
+        None
+    }
+
+    pub fn alloc<T: Zeroable>(&self, n: usize) -> Result<Allocation<'_, T>> {
+        self.alloc_mem(n, Memory::Default)
+    }
+    pub fn alloc_aligned<T: Zeroable>(&self, n: usize, align: usize) -> Result<Allocation<'_, T>> {
+        self.alloc_mem_aligned(n, align, Memory::Default)
+    }
+    pub fn alloc_mem<T: Zeroable>(&self, n: usize, memory: Memory) -> Result<Allocation<'_, T>> {
+        unsafe { self.alloc_layout(n, Layout::array::<T>(n)?, memory) }
+    }
+    pub fn alloc_mem_aligned<T: Zeroable>(&self, n: usize, align: usize, memory: Memory) -> Result<Allocation<'_, T>> {
+        unsafe { self.alloc_layout(n, Layout::array::<T>(n)?.align_to(align)?, memory) }
+    }
+
+    pub fn allocator(&self) -> impl MemoryAllocator {
+        struct GpuMemoryAllocator<'a>(&'a Gpu);
+        impl<'a> MemoryAllocator for GpuMemoryAllocator<'a> {
+            type Allocation<T: Zeroable> = Allocation<'a, T>;
+
+            fn alloc<T: Zeroable>(&self, n: usize) -> Result<Self::Allocation<T>> {
+                self.0.alloc(n)
+            }
+            fn alloc_aligned<T: Zeroable>(&self, n: usize, align: usize) -> Result<Self::Allocation<T>> {
+                self.0.alloc_aligned(n, align)
+            }
+        }
+        GpuMemoryAllocator(self)
+    }
+    pub fn allocator_mem(&self, memory: Memory) -> impl MemoryAllocator {
+        struct GpuMemoryAllocatorMem<'a>(&'a Gpu, Memory);
+        impl<'a> MemoryAllocator for GpuMemoryAllocatorMem<'a> {
+            type Allocation<T: Zeroable> = Allocation<'a, T>;
+
+            fn alloc<T: Zeroable>(&self, n: usize) -> Result<Self::Allocation<T>> {
+                self.0.alloc_mem(n, self.1)
+            }
+            fn alloc_aligned<T: Zeroable>(&self, n: usize, align: usize) -> Result<Self::Allocation<T>> {
+                self.0.alloc_mem_aligned(n, align, self.1)
+            }
+        }
+        GpuMemoryAllocatorMem(self, memory)
+    }
+
+    pub fn create_arena(&self, size: usize) -> Result<Arena<'_>> {
+        self.create_arena_mem(size, Memory::Default)
+    }
+    pub fn create_arena_mem(&self, size: usize, memory: Memory) -> Result<Arena<'_>> {
+        self.create_arena_aligned(size, 16, memory)
+    }
+    pub fn create_arena_aligned(&self, size: usize, align: usize, memory: Memory) -> Result<Arena<'_>> {
+        let allocation = self.alloc_mem_aligned::<u8>(size, align, memory)?;
+        Ok(Arena {
+            allocation,
+            offset: Cell::new(0),
+        })
     }
 
     pub fn create_texture(&self, desc: TextureDesc, data: DevicePointer) -> Texture<'_> {
@@ -953,5 +1155,3 @@ impl Gpu {
         Ok(())
     }
 }
-
-pub use vulkan::create_debug_info_callback;
