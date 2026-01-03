@@ -8,7 +8,7 @@ mod arena;
 use std::alloc::Layout;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
-use std::ops::Bound;
+use std::ops::{Bound, Index, IndexMut};
 use anyhow::Result;
 use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
@@ -397,6 +397,9 @@ impl DevicePointer {
     pub fn null() -> Self {
         Self(0)
     }
+    pub fn is_null(self) -> bool {
+        self.0 == 0
+    }
 
     pub fn to_raw(self) -> vk::DeviceAddress {
         self.0
@@ -481,6 +484,58 @@ impl<'a, T: Pod> MemoryAllocation for Allocation<'a, T> {
 
     fn device(&self) -> DevicePointer {
         self.device
+    }
+}
+
+#[derive(Debug)]
+pub struct DescriptorHeap<'a> {
+    allocation: Allocation<'a, u8>,
+    count: usize,
+    element_size: usize,
+}
+
+impl<'a> DescriptorHeap<'a> {
+    pub fn get(&self, index: usize) -> &[u8] {
+        assert!(index < self.count, "descriptor index out of bounds");
+        let offset = index * self.element_size;
+        &self.allocation.host()[offset..offset + self.element_size]
+    }
+    pub fn get_mut(&mut self, index: usize) -> &mut [u8] {
+        assert!(index < self.count, "descriptor index out of bounds");
+        let offset = index * self.element_size;
+        &mut self.allocation.host_mut()[offset..offset + self.element_size]
+    }
+
+    pub fn get_range(&self, index: usize, count: usize) -> &[u8] {
+        assert!(index + count <= self.count, "descriptor index out of bounds");
+        let offset = index * self.element_size;
+        &self.allocation.host()[offset..offset + count * self.element_size]
+    }
+    pub fn get_range_mut(&mut self, index: usize, count: usize) -> &mut [u8] {
+        assert!(index + count <= self.count, "descriptor index out of bounds");
+        let offset = index * self.element_size;
+        &mut self.allocation.host_mut()[offset..offset + count * self.element_size]
+    }
+
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    pub fn device(&self) -> DevicePointer {
+        self.allocation.device()
+    }
+}
+
+impl<'a> Index<usize> for DescriptorHeap<'a> {
+    type Output = [u8];
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.get(index)
+    }
+}
+impl<'a> IndexMut<usize> for DescriptorHeap<'a> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        self.get_mut(index)
     }
 }
 
@@ -695,8 +750,40 @@ impl<'a> CommandBuffer<'a> {
         todo!()
     }
 
-    pub fn set_active_texture_heap_pointer(&mut self, ptr: DevicePointer) {
-        todo!()
+    pub fn set_texture_heap(&mut self, textures: Option<&DescriptorHeap<'_>>,
+                            textures_rw: Option<&DescriptorHeap<'_>>, samplers: Option<&DescriptorHeap<'_>>) {
+        let pointers = [
+            textures.map(|heap| heap.device()).unwrap_or(DevicePointer::null()),
+            textures_rw.map(|heap| heap.device()).unwrap_or(DevicePointer::null()),
+            samplers.map(|heap| heap.device()).unwrap_or(DevicePointer::null()),
+        ];
+        let mut infos = [vk::DescriptorBufferBindingInfoEXT::default(); 3];
+        let mut index = 0;
+        for &pointer in &pointers {
+            if pointer.is_null() {
+                continue;
+            }
+            infos[index] = vk::DescriptorBufferBindingInfoEXT::builder()
+                .address(pointer.to_raw())
+                .usage(vk::BufferUsageFlags::RESOURCE_DESCRIPTOR_BUFFER_EXT
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                    | vk::BufferUsageFlags::STORAGE_BUFFER
+                    | vk::BufferUsageFlags::TRANSFER_SRC)
+                .build();
+            index += 1;
+        }
+        unsafe { self.gpu.device.cmd_bind_descriptor_buffers_ext(self.buffer, &infos[..index]) };
+
+        let mut index = 0;
+        for (i, &pointer) in pointers.iter().enumerate() {
+            if pointer.is_null() {
+                continue;
+            }
+            unsafe { self.gpu.device.cmd_set_descriptor_buffer_offsets_ext(
+                self.buffer, vk::PipelineBindPoint::GRAPHICS, self.gpu.pipeline_layout.layout,
+                i as u32, &[index], &[0]) };
+            index += 1;
+        }
     }
 
     pub fn barrier(&mut self, before: Stage, after: Stage, hazards: HazardFlags) {
@@ -1131,6 +1218,24 @@ impl Gpu {
     }
     pub fn alloc_mem_aligned<T: Pod>(&self, n: usize, align: usize, memory: Memory) -> Result<Allocation<'_, T>> {
         unsafe { self.alloc_layout(n, Layout::array::<T>(n)?.align_to(align)?, memory) }
+    }
+
+    fn alloc_descriptor_heap(&self, count: u32, element_size: usize) -> Result<DescriptorHeap<'_>> {
+        Ok(DescriptorHeap {
+            allocation: self.alloc(count as usize * element_size)?,
+            count: count as usize,
+            element_size,
+        })
+    }
+
+    pub fn alloc_texture_descriptor_heap(&self) -> Result<DescriptorHeap<'_>> {
+        self.alloc_descriptor_heap(PipelineLayout::MAX_TEXTURES, self.descriptor_sizes.sampled_texture)
+    }
+    pub fn alloc_texture_rw_descriptor_heap(&self) -> Result<DescriptorHeap<'_>> {
+        self.alloc_descriptor_heap(PipelineLayout::MAX_TEXTURES_RW, self.descriptor_sizes.storage_texture)
+    }
+    pub fn alloc_sampler_descriptor_heap(&self) -> Result<DescriptorHeap<'_>> {
+        self.alloc_descriptor_heap(PipelineLayout::MAX_SAMPLERS, self.descriptor_sizes.sampler)
     }
 
     pub fn allocator(&self) -> impl MemoryAllocator {

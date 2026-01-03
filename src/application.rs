@@ -15,6 +15,10 @@ pub struct Application<'a> {
     frame_semaphore: gpu::Semaphore<'a>,
     frame_arenas: Box<[gpu::Arena<'a>]>,
     next_frame: u64,
+
+    tex: gpu::Texture<'a>,
+    tex_descriptors: gpu::DescriptorHeap<'a>,
+    sampler_descriptors: gpu::DescriptorHeap<'a>,
 }
 
 impl<'a> Application<'a> {
@@ -42,15 +46,13 @@ impl<'a> Application<'a> {
 
         queue.submit_no_signal(command_buffer)?.wait();
 
-        let mut tex_descriptor = vec![0u8; tex.view_descriptor_size()];
-        tex.view_descriptor(&mut tex_descriptor)?;
-        println!("{tex_descriptor:?}");
+        let mut tex_descriptors = gpu.alloc_texture_descriptor_heap()?;
+        let mut sampler_descriptors = gpu.alloc_sampler_descriptor_heap()?;
 
-        let mut sampler_descriptor = vec![0u8; gpu.sampler_descriptor_size()];
+        tex.view_descriptor(&mut tex_descriptors[0])?;
         gpu.sampler_descriptor(gpu::SamplerDesc {
             ..Default::default()
-        }, &mut sampler_descriptor)?;
-        println!("{sampler_descriptor:?}");
+        }, &mut sampler_descriptors[0])?;
 
         Ok(Self {
             gpu,
@@ -62,6 +64,10 @@ impl<'a> Application<'a> {
                 .map(|_| gpu.create_arena(1024 * 1024))
                 .collect::<Result<_>>()?,
             next_frame: 1,
+
+            tex,
+            tex_descriptors,
+            sampler_descriptors,
         })
     }
 
@@ -78,6 +84,7 @@ impl<'a> Application<'a> {
         arena.reset();
 
         let indices = arena.alloc_data(&[0u32, 1, 2])?;
+
         let vertex_data_positions = arena.alloc_data(&[
             Vec2::new(0.0, -0.5),
             Vec2::new(0.5, 0.5),
@@ -88,18 +95,32 @@ impl<'a> Application<'a> {
             Vec3A::new(0.0, 1.0, 0.0),
             Vec3A::new(0.0, 0.0, 1.0),
         ])?;
+        let vertex_data_uvs = arena.alloc_data(&[
+            Vec2::new(0.5, 0.0),
+            Vec2::new(1.0, 1.0),
+            Vec2::new(0.0, 1.0),
+        ])?;
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-        struct VertexData(DevicePointer, DevicePointer, Mat2);
+        struct VertexData(DevicePointer, DevicePointer, DevicePointer, u64, Mat2);
         let vertex_data = arena.alloc_data(&[VertexData(
             vertex_data_positions.device(),
             vertex_data_colors.device(),
+            vertex_data_uvs.device(),
+            0,
             Mat2::from_angle(time as f32),
         )])?;
-        let pixel_data = arena.alloc_data(&[
+
+        let pixel_data_colors = arena.alloc_data(&[
             Vec4::new(0.0, 0.0, 1.0, 0.0),
             Vec4::new(1.0, 1.0, 0.5, 1.0),
         ])?;
+        #[repr(C)]
+        #[derive(Copy, Clone, Debug, Pod, Zeroable)]
+        struct PixelData(DevicePointer);
+        let pixel_data = arena.alloc_data(&[PixelData(
+            pixel_data_colors.device(),
+        )])?;
 
         let mut command_buffer = self.queue.create_buffer()?;
 
@@ -111,6 +132,11 @@ impl<'a> Application<'a> {
         };
         command_buffer.begin_render_pass(&render_pass_desc, image_index);
         command_buffer.bind_shaders([&self.vertex_shader, &self.pixel_shader]);
+         command_buffer.set_texture_heap(
+             Some(&self.tex_descriptors),
+             None,
+             Some(&self.sampler_descriptors),
+         );
         command_buffer.draw_indexed(
             vertex_data.device(), pixel_data.device(),
             indices.device(), 3, gpu::IndexType::U32);

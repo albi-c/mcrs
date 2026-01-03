@@ -184,27 +184,53 @@ impl Queues {
 #[derive(Debug)]
 pub struct PipelineLayout {
     pub layout: vk::PipelineLayout,
+    pub set_layouts: [vk::DescriptorSetLayout; 3],
 }
 
 impl PipelineLayout {
+    pub const MAX_TEXTURES: u32 = 65536;
+    pub const MAX_TEXTURES_RW: u32 = 8192;
+    pub const MAX_SAMPLERS: u32 = 1024;
+
+    fn create_descriptor_set_layout(device: &Device, ty: vk::DescriptorType, count: u32) -> Result<vk::DescriptorSetLayout> {
+        let binding = vk::DescriptorSetLayoutBinding::builder()
+            .binding(0)
+            .descriptor_type(ty)
+            .descriptor_count(count)
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT);
+        let bindings = [binding];
+        let info = vk::DescriptorSetLayoutCreateInfo::builder()
+            .flags(vk::DescriptorSetLayoutCreateFlags::DESCRIPTOR_BUFFER_EXT)
+            .bindings(&bindings);
+        Ok(unsafe { device.create_descriptor_set_layout(&info, None)? })
+    }
+
     pub fn new(device: &Device) -> Result<Self> {
         let push_constant_ranges = [
             vk::PushConstantRange::builder()
                 .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
                 .size(16),
         ];
-        // TODO: descriptor sets
+        let set_layouts = [
+            Self::create_descriptor_set_layout(device, vk::DescriptorType::SAMPLED_IMAGE, Self::MAX_TEXTURES)?,
+            Self::create_descriptor_set_layout(device, vk::DescriptorType::STORAGE_IMAGE, Self::MAX_TEXTURES_RW)?,
+            Self::create_descriptor_set_layout(device, vk::DescriptorType::SAMPLER, Self::MAX_SAMPLERS)?,
+        ];
         let info = vk::PipelineLayoutCreateInfo::builder()
-            .set_layouts(&[])
+            .set_layouts(&set_layouts)
             .push_constant_ranges(&push_constant_ranges);
         let layout = unsafe { device.create_pipeline_layout(&info, None)? };
         Ok(Self {
             layout,
+            set_layouts,
         })
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {
         unsafe {
+            for layout in self.set_layouts {
+                device.destroy_descriptor_set_layout(layout, None);
+            }
             device.destroy_pipeline_layout(self.layout, None);
         }
     }
@@ -213,6 +239,7 @@ impl PipelineLayout {
 #[derive(Debug)]
 pub struct DescriptorSizes {
     pub sampled_texture: usize,
+    pub storage_texture: usize,
     pub sampler: usize,
 }
 
@@ -227,6 +254,7 @@ impl DescriptorSizes {
         };
         Ok(Self {
             sampled_texture: prop.sampled_image_descriptor_size,
+            storage_texture: prop.storage_image_descriptor_size,
             sampler: prop.sampler_descriptor_size,
         })
     }
@@ -629,7 +657,8 @@ pub fn create_shader<'a>(gpu: &'a Gpu, spirv: &[u8], stage: ShaderStage) -> Resu
         .code(buffer)
         .code_type(vk::ShaderCodeTypeEXT::SPIRV)
         .push_constant_ranges(&push_constant_ranges)
-        .name(b"main\0");
+        .name(b"main\0")
+        .set_layouts(&gpu.pipeline_layout.set_layouts);
 
     let infos = [info];
     let shader = unsafe { gpu.device.create_shaders_ext(&infos, None)?.0[0] };
