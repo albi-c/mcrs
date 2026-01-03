@@ -419,6 +419,12 @@ pub trait MemoryAllocator {
         self.alloc_aligned(n, 1)
     }
     fn alloc_aligned<T: Pod>(&self, n: usize, align: usize) -> Result<Self::Allocation<T>>;
+
+    fn alloc_data<T: Pod>(&self, data: &[T]) -> Result<Self::Allocation<T>> {
+        let mut alloc = self.alloc(data.len())?;
+        alloc.host_mut().copy_from_slice(data);
+        Ok(alloc)
+    }
 }
 
 #[derive(Debug)]

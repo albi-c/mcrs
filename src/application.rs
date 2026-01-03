@@ -1,5 +1,5 @@
 use anyhow::Result;
-use glam::Vec4;
+use glam::{Vec2, Vec3A, Vec4};
 use gpu::{MemoryAllocation, MemoryAllocator};
 
 const FRAMES_IN_FLIGHT: u64 = 2;
@@ -42,14 +42,25 @@ impl<'a> Application<'a> {
         let arena = self.get_frame_arena();
         arena.reset();
 
-        let mut indices = arena.alloc(3)?;
-        indices.host_mut()[0..3].copy_from_slice(&[0u32, 1, 2]);
-
-        let mut pixel_data = arena.alloc(2)?;
-        pixel_data.host_mut()[0..2].copy_from_slice(&[
+        let indices = arena.alloc_data(&[0u32, 1, 2])?;
+        let vertex_data_positions = arena.alloc_data(&[
+            Vec2::new(0.0, -0.5),
+            Vec2::new(0.5, 0.5),
+            Vec2::new(-0.5, 0.5),
+        ])?;
+        let vertex_data_colors = arena.alloc_data(&[
+            Vec3A::new(1.0, 0.0, 0.0),
+            Vec3A::new(0.0, 1.0, 0.0),
+            Vec3A::new(0.0, 0.0, 1.0),
+        ])?;
+        let vertex_data = arena.alloc_data(&[
+            vertex_data_positions.device(),
+            vertex_data_colors.device(),
+        ])?;
+        let pixel_data = arena.alloc_data(&[
             Vec4::new(0.0, 0.0, 1.0, 0.0),
             Vec4::new(1.0, 1.0, 0.5, 1.0),
-        ]);
+        ])?;
 
         let mut command_buffer = self.queue.create_buffer()?;
 
@@ -62,7 +73,7 @@ impl<'a> Application<'a> {
         command_buffer.begin_render_pass(&render_pass_desc, image_index);
         command_buffer.bind_shaders([&self.vertex_shader, &self.pixel_shader]);
         command_buffer.draw_indexed(
-            gpu::DevicePointer::null(), pixel_data.device(),
+            vertex_data.device(), pixel_data.device(),
             indices.device(), 3, gpu::IndexType::U32);
         command_buffer.end_render_pass(image_index);
 

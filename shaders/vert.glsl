@@ -4,24 +4,25 @@
 
 layout(location = 0) out vec3 outColor;
 
-vec2 positions[3] = vec2[](
-    vec2(0.0, -0.5),
-    vec2(0.5, 0.5),
-    vec2(-0.5, 0.5)
-);
+layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer VertDataPositions {
+    vec2 positions[];
+};
 
-vec3 colors[3] = vec3[](
-    vec3(1.0, 0.0, 0.0),
-    vec3(0.0, 1.0, 0.0),
-    vec3(0.0, 0.0, 1.0)
-);
+layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer VertDataColors {
+    vec4 colors[];
+};
+
+layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer VertData {
+    VertDataPositions positions;
+    VertDataColors colors;
+};
 
 layout(std430, push_constant) uniform Data {
-    Pointer vert;
+    VertData vert;
     Pointer frag;
 } data;
 
 void main() {
-    gl_Position = vec4(positions[gl_VertexIndex], 0.0, 1.0);
-    outColor = colors[gl_VertexIndex];
+    gl_Position = vec4(data.vert.positions.positions[gl_VertexIndex], 0.0, 1.0);
+    outColor = data.vert.colors.colors[gl_VertexIndex].xyz;
 }
