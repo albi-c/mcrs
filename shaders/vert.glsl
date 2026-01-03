@@ -15,6 +15,7 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Ver
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer VertData {
     VertDataPositions positions;
     VertDataColors colors;
+    mat2 matrix;
 };
 
 layout(std430, push_constant) uniform Data {
@@ -23,6 +24,6 @@ layout(std430, push_constant) uniform Data {
 } data;
 
 void main() {
-    gl_Position = vec4(data.vert.positions.positions[gl_VertexIndex], 0.0, 1.0);
+    gl_Position = vec4(data.vert.matrix *  data.vert.positions.positions[gl_VertexIndex], 0.0, 1.0);
     outColor = data.vert.colors.colors[gl_VertexIndex].xyz;
 }

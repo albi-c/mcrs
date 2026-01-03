@@ -1,6 +1,9 @@
+use std::io::Cursor;
 use anyhow::Result;
-use glam::{Vec2, Vec3A, Vec4};
-use gpu::{MemoryAllocation, MemoryAllocator};
+use bytemuck::{Pod, Zeroable};
+use glam::{Mat2, Vec2, Vec3A, Vec4};
+use image::ImageReader;
+use gpu::{DevicePointer, MemoryAllocation, MemoryAllocator};
 
 const FRAMES_IN_FLIGHT: u64 = 2;
 
@@ -17,6 +20,10 @@ pub struct Application<'a> {
 impl<'a> Application<'a> {
     pub fn new(gpu: &'a gpu::Gpu) -> Result<Self> {
         let queue = gpu.create_queue(gpu::QueueType::Graphics)?;
+
+        let img = ImageReader::new(Cursor::new(include_bytes!("../textures/wall.jpg")))
+            .with_guessed_format()?.decode()?.into_rgba8();
+
         Ok(Self {
             gpu,
             vertex_shader: gpu.create_shader(include_bytes!("../shaders/vert.spv"), gpu::ShaderStage::Vertex)?,
@@ -34,7 +41,7 @@ impl<'a> Application<'a> {
         &self.frame_arenas[(self.next_frame % FRAMES_IN_FLIGHT) as usize]
     }
 
-    pub fn render(&mut self, ctx: &dyn gpu::SwapchainContext) -> Result<()> {
+    pub fn render(&mut self, time: f64, ctx: &dyn gpu::SwapchainContext) -> Result<()> {
         if self.next_frame > FRAMES_IN_FLIGHT {
             self.frame_semaphore.wait(self.next_frame - FRAMES_IN_FLIGHT)?;
         }
@@ -53,10 +60,14 @@ impl<'a> Application<'a> {
             Vec3A::new(0.0, 1.0, 0.0),
             Vec3A::new(0.0, 0.0, 1.0),
         ])?;
-        let vertex_data = arena.alloc_data(&[
+        #[repr(C)]
+        #[derive(Copy, Clone, Debug, Pod, Zeroable)]
+        struct VertexData(DevicePointer, DevicePointer, Mat2);
+        let vertex_data = arena.alloc_data(&[VertexData(
             vertex_data_positions.device(),
             vertex_data_colors.device(),
-        ])?;
+            Mat2::from_angle(time as f32),
+        )])?;
         let pixel_data = arena.alloc_data(&[
             Vec4::new(0.0, 0.0, 1.0, 0.0),
             Vec4::new(1.0, 1.0, 0.5, 1.0),

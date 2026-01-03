@@ -82,6 +82,7 @@ struct App {
     gpu: Box<gpu::Gpu>,
     window_size: Cell<(u32, u32)>,
     minimized: Cell<bool>,
+    start_time: std::time::Instant,
 }
 
 impl App {
@@ -98,6 +99,7 @@ impl App {
             gpu,
             window_size: Cell::new((size.width, size.height)),
             minimized: Cell::new(false),
+            start_time: std::time::Instant::now(),
         })
     }
 
@@ -117,7 +119,8 @@ impl App {
 
     fn render(&self, application: &mut Application) -> Result<()> {
         if !self.minimized.get() {
-            application.render(&self.get_swapchain_context())
+            let elapsed = self.start_time.elapsed().as_secs_f64();
+            application.render(elapsed, &self.get_swapchain_context())
         } else {
             Ok(())
         }
