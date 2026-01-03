@@ -756,6 +756,20 @@ impl<'a> Drop for Shader<'a> {
     }
 }
 
+pub trait SwapchainContext {
+    fn get_instance(&self) -> &Instance;
+    fn get_window_size(&self) -> (u32, u32);
+}
+
+impl SwapchainContext for (&Instance, (u32, u32)) {
+    fn get_instance(&self) -> &Instance {
+        self.0
+    }
+    fn get_window_size(&self) -> (u32, u32) {
+        self.1
+    }
+}
+
 #[derive(Debug)]
 pub struct Gpu {
     pub(crate) queue_families: QueueFamilies,
@@ -767,12 +781,15 @@ pub struct Gpu {
 }
 
 impl Gpu {
-    pub fn new(instance: &Instance, surface: vk::SurfaceKHR, window_size: (u32, u32)) -> Result<Self> {
+    pub fn new(ctx: &dyn SwapchainContext, surface: vk::SurfaceKHR) -> Result<Self> {
+        let instance = ctx.get_instance();
+        let window_size = ctx.get_window_size();
         let (physical_device, queue_families) = find_suitable_device(instance, surface)?;
         let logical_device = create_logical_device(instance, physical_device, queue_families)?;
         let internal_queues = Queues::new(&logical_device, queue_families)?;
         let swapchain = create_swapchain(
-            instance, physical_device, surface, window_size, queue_families, &logical_device)?;
+            instance, physical_device, surface, window_size, queue_families,
+            &logical_device, vk::SwapchainKHR::null())?;
         Ok(Self {
             queue_families,
             queues: internal_queues,
@@ -783,10 +800,13 @@ impl Gpu {
         })
     }
 
-    pub fn recreate_swapchain(&self, instance: &Instance, window_size: (u32, u32)) -> Result<()> {
-        let swapchain = create_swapchain(
-            instance, self.physical_device, self.surface, window_size, self.queue_families, &self.device)?;
+    pub fn recreate_swapchain(&self, ctx: &dyn SwapchainContext) -> Result<()> {
         unsafe { self.device.device_wait_idle()? };
+        let instance = ctx.get_instance();
+        let window_size = ctx.get_window_size();
+        let swapchain = create_swapchain(
+            instance, self.physical_device, self.surface, window_size, self.queue_families,
+            &self.device, self.swapchain.borrow().swapchain)?;
         let mut old_swapchain = self.swapchain.replace(swapchain);
         unsafe { old_swapchain.destroy(&self.device) };
         Ok(())
@@ -860,20 +880,30 @@ impl Gpu {
         })
     }
 
-    pub fn next_swapchain_image(&self) -> Result<usize> {
+    pub fn next_swapchain_image(&self, ctx: &dyn SwapchainContext) -> Result<usize> {
         let fence_info = vk::FenceCreateInfo::builder();
         let fence = unsafe { self.device.create_fence(&fence_info, None)? };
 
         let mut swapchain = self.swapchain.borrow_mut();
 
-        let next_image_index = unsafe {
+        let acquire_result = unsafe {
             self.device.acquire_next_image_khr(
                 swapchain.swapchain,
                 u64::MAX,
                 vk::Semaphore::null(),
                 fence,
-            )?.0 as usize
+            )
         };
+        let next_image_index = match acquire_result {
+            Ok((_, vk::SuccessCode::SUBOPTIMAL_KHR)) | Err(vk::ErrorCode::OUT_OF_DATE_KHR) => {
+                unsafe { self.device.destroy_fence(fence, None) };
+                self.recreate_swapchain(ctx)?;
+                return self.next_swapchain_image(ctx);
+            },
+            Ok((index, _)) => index as usize,
+            Err(e) => Err(e)?,
+        };
+
         swapchain.image_index = next_image_index;
 
         unsafe {
@@ -900,21 +930,6 @@ impl Gpu {
 
         cmd_buf.end_recording()?;
 
-        // let wait_semaphore_values = [wait_value];
-        // let mut semaphore_info = vk::TimelineSemaphoreSubmitInfo::builder()
-        //     .wait_semaphore_values(&wait_semaphore_values);
-        //
-        // let command_buffers = [cmd_buf.buffer];
-        // let wait_semaphores = [wait_semaphore.semaphore];
-        // let wait_stage_flags = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        // let signal_semaphores = [present_semaphore];
-        // let submit_info = vk::SubmitInfo::builder()
-        //     .command_buffers(&command_buffers)
-        //     .wait_semaphores(&wait_semaphores)
-        //     .wait_dst_stage_mask(&wait_stage_flags)
-        //     .signal_semaphores(&signal_semaphores)
-        //     .push_next(&mut semaphore_info);
-
         let wait_semaphores = [present_semaphore];
         let swapchains = [swapchain.swapchain];
         let image_indices = [image_index as u32];
@@ -932,7 +947,6 @@ impl Gpu {
                                      &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])?;
 
         unsafe {
-            // self.device.queue_submit(self.queues.raw_graphics(), &[submit_info], vk::Fence::null())?;
             self.device.queue_present_khr(self.queues.present(), &info)?;
         }
 

@@ -24,7 +24,7 @@ impl<'a> Application<'a> {
         })
     }
 
-    pub fn render(&mut self) -> Result<()> {
+    pub fn render(&mut self, ctx: &dyn gpu::SwapchainContext) -> Result<()> {
         if self.next_frame > FRAMES_IN_FLIGHT {
             self.frame_semaphore.wait(self.next_frame - FRAMES_IN_FLIGHT)?;
         }
@@ -33,7 +33,7 @@ impl<'a> Application<'a> {
 
         command_buffer.begin_recording()?;
 
-        let image_index = self.gpu.next_swapchain_image()?;
+        let image_index = self.gpu.next_swapchain_image(ctx)?;
         let render_pass_desc = gpu::RenderPassDesc {
             ..Default::default()
         };

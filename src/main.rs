@@ -1,5 +1,6 @@
 mod application;
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use anyhow::{anyhow, Result};
 use vulkanalia::{vk, Entry, Instance};
@@ -79,6 +80,8 @@ struct App {
     instance: Instance,
     messenger: Option<vk::DebugUtilsMessengerEXT>,
     gpu: Box<gpu::Gpu>,
+    window_size: Cell<(u32, u32)>,
+    minimized: Cell<bool>,
 }
 
 impl App {
@@ -88,16 +91,36 @@ impl App {
         let (instance, messenger) = create_instance(window, &entry)?;
         let surface = unsafe { vulkanalia::window::create_surface(&instance, &window, &window)? };
         let size = window.inner_size();
-        let gpu = Box::new(gpu::Gpu::new(&instance, surface, (size.width, size.height))?);
+        let gpu = Box::new(gpu::Gpu::new(&(&instance, (size.width, size.height)), surface)?);
         Ok(Self {
             instance,
             messenger,
             gpu,
+            window_size: Cell::new((size.width, size.height)),
+            minimized: Cell::new(false),
         })
     }
 
+    fn get_swapchain_context(&self) -> impl gpu::SwapchainContext {
+        (&self.instance, self.window_size.get())
+    }
+
+    fn resize(&self, new_size: (u32, u32)) -> Result<()> {
+        self.minimized.set(new_size.0 == 0 || new_size.1 == 0);
+        if new_size != self.window_size.get() {
+            self.window_size.set(new_size);
+            self.gpu.recreate_swapchain(&self.get_swapchain_context())
+        } else {
+            Ok(())
+        }
+    }
+
     fn render(&self, application: &mut Application) -> Result<()> {
-        application.render()
+        if !self.minimized.get() {
+            application.render(&self.get_swapchain_context())
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -136,6 +159,9 @@ fn main() -> Result<()> {
                     }
                 },
                 WindowEvent::CloseRequested => target.exit(),
+                WindowEvent::Resized(size) => {
+                    app.resize((size.width, size.height)).unwrap();
+                },
                 _ => {},
             },
             Event::LoopExiting => {

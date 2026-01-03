@@ -3,7 +3,7 @@ use std::collections::{HashSet, LinkedList};
 use std::ffi::{c_void, CStr};
 use anyhow::{anyhow, Result};
 use vulkanalia::{vk, Device, Instance};
-use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, InstanceV1_0, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
+use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, HasBuilder, InstanceV1_0, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
 use crate::{need_portability_ext, validation_enabled, Gpu, Queue, Shader, ShaderStage, VALIDATION_LAYER};
 
 const FEATURE_REQUIREMENTS: &[(fn(&vk::PhysicalDeviceFeatures) -> vk::Bool32, &str)] = &[
@@ -206,7 +206,8 @@ impl SwapchainSupport {
 }
 
 pub fn create_swapchain(instance: &Instance, physical_device: vk::PhysicalDevice, surface: vk::SurfaceKHR,
-                        window_size: (u32, u32), queue_families: QueueFamilies, device: &Device) -> Result<Swapchain> {
+                        window_size: (u32, u32), queue_families: QueueFamilies, device: &Device,
+                        old_swapchain: vk::SwapchainKHR) -> Result<Swapchain> {
     let support = SwapchainSupport::get(instance, physical_device, surface)?;
 
     let surface_format = support.formats
@@ -261,7 +262,7 @@ pub fn create_swapchain(instance: &Instance, physical_device: vk::PhysicalDevice
         .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
         .present_mode(present_mode)
         .clipped(true)
-        .old_swapchain(vk::SwapchainKHR::null());
+        .old_swapchain(old_swapchain);
 
     let swapchain = unsafe { device.create_swapchain_khr(&info, None)? };
 
