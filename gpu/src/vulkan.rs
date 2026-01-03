@@ -180,6 +180,35 @@ impl Queues {
     }
 }
 
+#[derive(Debug)]
+pub struct PipelineLayout {
+    pub layout: vk::PipelineLayout,
+}
+
+impl PipelineLayout {
+    pub fn new(device: &Device) -> Result<Self> {
+        let push_constant_ranges = [
+            vk::PushConstantRange::builder()
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+                .size(16),
+        ];
+        // TODO: descriptor sets
+        let info = vk::PipelineLayoutCreateInfo::builder()
+            .set_layouts(&[])
+            .push_constant_ranges(&push_constant_ranges);
+        let layout = unsafe { device.create_pipeline_layout(&info, None)? };
+        Ok(Self {
+            layout,
+        })
+    }
+
+    pub unsafe fn destroy(&mut self, device: &Device) {
+        unsafe {
+            device.destroy_pipeline_layout(self.layout, None);
+        }
+    }
+}
+
 fn rank_device(instance: &Instance, device: vk::PhysicalDevice) -> usize {
     let properties = unsafe { instance.get_physical_device_properties(device) };
     match properties.device_type {
@@ -562,11 +591,17 @@ pub fn create_shader<'a>(gpu: &'a Gpu, spirv: &[u8], stage: ShaderStage) -> Resu
     buffer[..spirv.len()].copy_from_slice(spirv);
 
     let vk_stage = get_stage(stage);
+    let push_constant_ranges = [
+        vk::PushConstantRange::builder()
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+            .size(16),
+    ];
     let info = vk::ShaderCreateInfoEXT::builder()
         .stage(vk_stage)
         .next_stage(get_next_stage(stage))
         .code(buffer)
         .code_type(vk::ShaderCodeTypeEXT::SPIRV)
+        .push_constant_ranges(&push_constant_ranges)
         .name(b"main\0");
 
     let infos = [info];

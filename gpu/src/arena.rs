@@ -1,6 +1,6 @@
 use std::cell::Cell;
 use std::marker::PhantomData;
-use bytemuck::Zeroable;
+use bytemuck::{Pod, Zeroable};
 use anyhow::{anyhow, Result};
 use crate::{Allocation, DevicePointer, MemoryAllocation, MemoryAllocator};
 
@@ -16,9 +16,9 @@ impl<'a> Arena<'a> {
 }
 
 impl<'a> MemoryAllocator for Arena<'a> {
-    type Allocation<T: Zeroable> = ArenaAllocation<'a, T>;
+    type Allocation<T: Pod> = ArenaAllocation<'a, T>;
 
-    fn alloc_aligned<T: Zeroable>(&self, n: usize, align: usize) -> Result<Self::Allocation<T>> {
+    fn alloc_aligned<T: Pod>(&self, n: usize, align: usize) -> Result<Self::Allocation<T>> {
         let align = align.max(align_of::<T>());
         assert!(align.is_power_of_two(), "alignment must be a power of two");
         self.offset.set((self.offset.get() + align - 1) & !(align - 1));
@@ -40,14 +40,14 @@ impl<'a> MemoryAllocator for Arena<'a> {
     }
 }
 
-pub struct ArenaAllocation<'a, T: Zeroable> {
+pub struct ArenaAllocation<'a, T: Pod> {
     host: *mut T,
     device: DevicePointer,
     count: usize,
     pd: PhantomData<&'a Arena<'a>>,
 }
 
-impl<'a, T: Zeroable> MemoryAllocation for ArenaAllocation<'a, T> {
+impl<'a, T: Pod> MemoryAllocation for ArenaAllocation<'a, T> {
     type Type = T;
 
     fn host(&self) -> &[Self::Type] {

@@ -9,10 +9,12 @@ members = ["gpu"]
 
 [workspace.dependencies]
 bytemuck = "1.24.0"
+bytemuck_derive = "1.10.2"
 vulkanalia = "0.34.0"
 anyhow = "1.0.100"
 log = "0.4.29"
 pretty_env_logger = "0.5.0"
+glam = { version = "0.30.9", features = ["bytemuck"] }
 
 [dependencies]
 gpu = { path = "gpu" }
@@ -21,3 +23,4 @@ anyhow = { workspace = true }
 vulkanalia = { workspace = true, features = ["libloading", "window"] }
 log = { workspace = true }
 pretty_env_logger = { workspace = true }
+glam = { workspace = true }

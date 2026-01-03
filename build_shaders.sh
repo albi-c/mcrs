@@ -1,2 +1,2 @@
-glslc shaders/shader.vert -o shaders/vert.spv
-glslc shaders/shader.frag -o shaders/frag.spv
+glslc -fshader-stage=vertex shaders/vert.glsl -o shaders/vert.spv
+glslc -fshader-stage=fragment shaders/frag.glsl -o shaders/frag.spv

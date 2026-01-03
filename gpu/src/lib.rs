@@ -17,7 +17,7 @@ use vulkanalia::{vk, Device, Instance, Version};
 use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrBufferDeviceAddressExtensionDeviceCommands, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
 use vulkanalia_vma as vma;
 use vulkanalia_vma::Alloc;
-use crate::vulkan::{create_logical_device, create_semaphore, create_shader, create_swapchain, find_suitable_device, CommandBufferPool, PooledCommandBuffer, QueueFamilies, Queues, Swapchain};
+use crate::vulkan::{create_logical_device, create_semaphore, create_shader, create_swapchain, find_suitable_device, CommandBufferPool, PipelineLayout, PooledCommandBuffer, QueueFamilies, Queues, Swapchain};
 
 pub use vulkan::create_debug_info_callback;
 pub use crate::arena::Arena;
@@ -371,10 +371,14 @@ pub struct TextureDescriptor {
 unsafe impl Zeroable for TextureDescriptor {}
 unsafe impl Pod for TextureDescriptor {}
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]
 pub struct DevicePointer(vk::DeviceAddress);
 
 impl DevicePointer {
+    pub fn null() -> Self {
+        Self(0)
+    }
+
     pub fn to_raw(self) -> vk::DeviceAddress {
         self.0
     }
@@ -389,6 +393,9 @@ impl From<DevicePointer> for u64 {
         value.to_raw()
     }
 }
+
+unsafe impl Zeroable for DevicePointer {}
+unsafe impl Pod for DevicePointer {}
 
 pub trait MemoryAllocation {
     type Type: Zeroable;
@@ -406,16 +413,16 @@ pub trait MemoryAllocation {
 }
 
 pub trait MemoryAllocator {
-    type Allocation<T: Zeroable>: MemoryAllocation<Type = T>;
+    type Allocation<T: Pod>: MemoryAllocation<Type = T>;
 
-    fn alloc<T: Zeroable>(&self, n: usize) -> Result<Self::Allocation<T>> {
+    fn alloc<T: Pod>(&self, n: usize) -> Result<Self::Allocation<T>> {
         self.alloc_aligned(n, 1)
     }
-    fn alloc_aligned<T: Zeroable>(&self, n: usize, align: usize) -> Result<Self::Allocation<T>>;
+    fn alloc_aligned<T: Pod>(&self, n: usize, align: usize) -> Result<Self::Allocation<T>>;
 }
 
 #[derive(Debug)]
-pub struct Allocation<'a, T: Zeroable> {
+pub struct Allocation<'a, T: Pod> {
     host: *mut T,
     device: DevicePointer,
     count: usize,
@@ -424,13 +431,13 @@ pub struct Allocation<'a, T: Zeroable> {
     gpu: &'a Gpu,
 }
 
-impl<'a, T: Zeroable> Drop for Allocation<'a, T> {
+impl<'a, T: Pod> Drop for Allocation<'a, T> {
     fn drop(&mut self) {
         unsafe { self.gpu.dealloc(self) };
     }
 }
 
-impl<'a, T: Zeroable> MemoryAllocation for Allocation<'a, T> {
+impl<'a, T: Pod> MemoryAllocation for Allocation<'a, T> {
     type Type = T;
 
     fn host(&self) -> &[Self::Type] {
@@ -672,7 +679,7 @@ impl<'a> CommandBuffer<'a> {
 
         let color_clear_value = vk::ClearValue {
             color: vk::ClearColorValue {
-                float32: [0.0, 1.0, 0.0, 1.0],
+                float32: [0.08, 0.0, 0.0, 1.0],
             },
         };
 
@@ -744,18 +751,22 @@ impl<'a> CommandBuffer<'a> {
         unsafe { self.gpu.device.cmd_draw(self.buffer, vertex_count, instance_count, first_vertex, first_instance) };
     }
 
-    pub fn draw_indexed(&mut self, // vertex_data: DevicePointer, pixel_data: DevicePointer,
+    pub fn draw_indexed(&mut self, vertex_data: DevicePointer, pixel_data: DevicePointer,
                         indices: DevicePointer, index_count: u32, index_type: IndexType) {
-        self.draw_indexed_instanced(indices, index_count,
+        self.draw_indexed_instanced(vertex_data, pixel_data, indices, index_count,
                                     0, index_type, 0, 1, 0);
     }
-    pub fn draw_indexed_instanced(&mut self, // vertex_data: DevicePointer, pixel_data: DevicePointer,
+    pub fn draw_indexed_instanced(&mut self, vertex_data: DevicePointer, pixel_data: DevicePointer,
                                   indices: DevicePointer, index_count: u32, first_index: u32,
                                   index_type: IndexType, vertex_offset: i32, instance_count: u32,
                                   first_instance: u32) {
         let (buffer, offset) = self.gpu.device_addr_to_buffer_offset(indices)
             .expect("invalid index buffer");
+        let push_constants = [vertex_data, pixel_data];
         unsafe {
+            self.gpu.device.cmd_push_constants(self.buffer, self.gpu.pipeline_layout.layout,
+                                               vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                                               0, bytemuck::cast_slice(&push_constants));
             self.gpu.device.cmd_bind_index_buffer(self.buffer, buffer, offset,
                                                   vk::IndexType::from_raw(index_type as i32));
             self.gpu.device.cmd_draw_indexed(self.buffer, index_count, instance_count, first_index,
@@ -844,6 +855,7 @@ pub struct Gpu {
     pub(crate) swapchain: RefCell<Swapchain>,
     pub(crate) allocator: Option<vma::Allocator>,
     pub(crate) buffers: RefCell<BTreeMap<vk::DeviceAddress, (vk::Buffer, vk::DeviceSize)>>,
+    pub(crate) pipeline_layout: PipelineLayout,
 }
 
 impl Gpu {
@@ -866,6 +878,7 @@ impl Gpu {
             surface,
             swapchain: RefCell::new(swapchain),
             allocator: Some(unsafe { vma::Allocator::new(&allocator_options)? }),
+            pipeline_layout: PipelineLayout::new(&logical_device)?,
             device: logical_device,
             buffers: RefCell::new(BTreeMap::new()),
         })
@@ -892,6 +905,7 @@ impl Gpu {
     pub unsafe fn destroy(&mut self, instance: &Instance) {
         unsafe {
             drop(self.allocator.take().unwrap());
+            self.pipeline_layout.destroy(&self.device);
             self.swapchain.borrow_mut().destroy(&self.device);
             self.queues.destroy(&self.device);
             self.device.destroy_device(None);
@@ -899,7 +913,7 @@ impl Gpu {
         }
     }
 
-    unsafe fn alloc_layout<T: Zeroable>(&self, count: usize, layout: Layout, memory: Memory) -> Result<Allocation<'_, T>> {
+    unsafe fn alloc_layout<T: Pod>(&self, count: usize, layout: Layout, memory: Memory) -> Result<Allocation<'_, T>> {
         let (properties, usage) = match memory {
             Memory::Default => (
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
@@ -965,7 +979,7 @@ impl Gpu {
         })
     }
 
-    unsafe fn dealloc<T: Zeroable>(&self, alloc: &mut Allocation<'_, T>) {
+    unsafe fn dealloc<T: Pod>(&self, alloc: &mut Allocation<'_, T>) {
         self.buffers.borrow_mut().remove(&alloc.device.0);
         let allocator = self.allocator.as_ref().expect("allocator dropped");
         unsafe {
@@ -985,28 +999,28 @@ impl Gpu {
         None
     }
 
-    pub fn alloc<T: Zeroable>(&self, n: usize) -> Result<Allocation<'_, T>> {
+    pub fn alloc<T: Pod>(&self, n: usize) -> Result<Allocation<'_, T>> {
         self.alloc_mem(n, Memory::Default)
     }
-    pub fn alloc_aligned<T: Zeroable>(&self, n: usize, align: usize) -> Result<Allocation<'_, T>> {
+    pub fn alloc_aligned<T: Pod>(&self, n: usize, align: usize) -> Result<Allocation<'_, T>> {
         self.alloc_mem_aligned(n, align, Memory::Default)
     }
-    pub fn alloc_mem<T: Zeroable>(&self, n: usize, memory: Memory) -> Result<Allocation<'_, T>> {
+    pub fn alloc_mem<T: Pod>(&self, n: usize, memory: Memory) -> Result<Allocation<'_, T>> {
         unsafe { self.alloc_layout(n, Layout::array::<T>(n)?, memory) }
     }
-    pub fn alloc_mem_aligned<T: Zeroable>(&self, n: usize, align: usize, memory: Memory) -> Result<Allocation<'_, T>> {
+    pub fn alloc_mem_aligned<T: Pod>(&self, n: usize, align: usize, memory: Memory) -> Result<Allocation<'_, T>> {
         unsafe { self.alloc_layout(n, Layout::array::<T>(n)?.align_to(align)?, memory) }
     }
 
     pub fn allocator(&self) -> impl MemoryAllocator {
         struct GpuMemoryAllocator<'a>(&'a Gpu);
         impl<'a> MemoryAllocator for GpuMemoryAllocator<'a> {
-            type Allocation<T: Zeroable> = Allocation<'a, T>;
+            type Allocation<T: Pod> = Allocation<'a, T>;
 
-            fn alloc<T: Zeroable>(&self, n: usize) -> Result<Self::Allocation<T>> {
+            fn alloc<T: Pod>(&self, n: usize) -> Result<Self::Allocation<T>> {
                 self.0.alloc(n)
             }
-            fn alloc_aligned<T: Zeroable>(&self, n: usize, align: usize) -> Result<Self::Allocation<T>> {
+            fn alloc_aligned<T: Pod>(&self, n: usize, align: usize) -> Result<Self::Allocation<T>> {
                 self.0.alloc_aligned(n, align)
             }
         }
@@ -1015,12 +1029,12 @@ impl Gpu {
     pub fn allocator_mem(&self, memory: Memory) -> impl MemoryAllocator {
         struct GpuMemoryAllocatorMem<'a>(&'a Gpu, Memory);
         impl<'a> MemoryAllocator for GpuMemoryAllocatorMem<'a> {
-            type Allocation<T: Zeroable> = Allocation<'a, T>;
+            type Allocation<T: Pod> = Allocation<'a, T>;
 
-            fn alloc<T: Zeroable>(&self, n: usize) -> Result<Self::Allocation<T>> {
+            fn alloc<T: Pod>(&self, n: usize) -> Result<Self::Allocation<T>> {
                 self.0.alloc_mem(n, self.1)
             }
-            fn alloc_aligned<T: Zeroable>(&self, n: usize, align: usize) -> Result<Self::Allocation<T>> {
+            fn alloc_aligned<T: Pod>(&self, n: usize, align: usize) -> Result<Self::Allocation<T>> {
                 self.0.alloc_mem_aligned(n, align, self.1)
             }
         }
