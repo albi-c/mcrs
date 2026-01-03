@@ -2,7 +2,7 @@ use std::io::Cursor;
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat2, Vec2, Vec3A, Vec4};
-use image::ImageReader;
+use image::{EncodableLayout, ImageReader};
 use gpu::{DevicePointer, MemoryAllocation, MemoryAllocator};
 
 const FRAMES_IN_FLIGHT: u64 = 2;
@@ -23,6 +23,24 @@ impl<'a> Application<'a> {
 
         let img = ImageReader::new(Cursor::new(include_bytes!("../textures/wall.jpg")))
             .with_guessed_format()?.decode()?.into_rgba8();
+        let img_alloc = gpu.allocator().alloc_data(img.as_bytes())?;
+
+        let mut command_buffer = queue.create_buffer()?;
+
+        command_buffer.begin_recording()?;
+
+        let tex = gpu.create_texture(gpu::TextureDesc {
+            ty: gpu::TextureType::Tex2D,
+            dimensions: (img.width(), img.height(), 1),
+            format: gpu::Format::RGBA8UNorm,
+            usage: gpu::TextureUsageFlags::Sampled,
+            ..Default::default()
+        }, &mut command_buffer)?;
+        command_buffer.copy_to_texture(img_alloc.device(), &tex);
+
+        command_buffer.end_recording()?;
+
+        queue.submit_no_signal(command_buffer)?.wait();
 
         Ok(Self {
             gpu,

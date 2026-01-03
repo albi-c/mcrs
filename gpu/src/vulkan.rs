@@ -28,6 +28,7 @@ const EXTENSION_REQUIREMENTS: &[vk::ExtensionName] = &[
     vk::KHR_MAINTENANCE3_EXTENSION.name,
     vk::EXT_DESCRIPTOR_INDEXING_EXTENSION.name,
     vk::EXT_DESCRIPTOR_BUFFER_EXTENSION.name,
+    vk::KHR_GET_MEMORY_REQUIREMENTS2_EXTENSION.name,
 ];
 
 pub fn create_semaphore(device: &Device, value: u64) -> Result<vk::Semaphore> {
@@ -555,19 +556,19 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
 //         Cull::All => vk::FrontFace::CLOCKWISE,
 //     }
 // }
-//
-// fn get_sample_count_flag(count: u8) -> vk::SampleCountFlags {
-//     match count {
-//         1 => vk::SampleCountFlags::_1,
-//         2 => vk::SampleCountFlags::_2,
-//         4 => vk::SampleCountFlags::_4,
-//         8 => vk::SampleCountFlags::_8,
-//         16 => vk::SampleCountFlags::_16,
-//         32 => vk::SampleCountFlags::_32,
-//         64 => vk::SampleCountFlags::_64,
-//         _ => panic!("invalid multisample count")
-//     }
-// }
+
+pub fn get_sample_count_flag(count: u8) -> vk::SampleCountFlags {
+    match count {
+        1 => vk::SampleCountFlags::_1,
+        2 => vk::SampleCountFlags::_2,
+        4 => vk::SampleCountFlags::_4,
+        8 => vk::SampleCountFlags::_8,
+        16 => vk::SampleCountFlags::_16,
+        32 => vk::SampleCountFlags::_32,
+        64 => vk::SampleCountFlags::_64,
+        _ => panic!("invalid multisample count")
+    }
+}
 
 pub fn get_stage(stage: ShaderStage) -> vk::ShaderStageFlags {
     match stage {

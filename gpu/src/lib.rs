@@ -14,10 +14,10 @@ use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use smart_default::SmartDefault;
 use vulkanalia::{vk, Device, Instance, Version};
-use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrBufferDeviceAddressExtensionDeviceCommands, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
+use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrBufferDeviceAddressExtensionDeviceCommands, KhrDynamicRenderingExtensionDeviceCommands, KhrMaintenance4ExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrSynchronization2ExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
 use vulkanalia_vma as vma;
 use vulkanalia_vma::Alloc;
-use crate::vulkan::{create_logical_device, create_semaphore, create_shader, create_swapchain, find_suitable_device, CommandBufferPool, PipelineLayout, PooledCommandBuffer, QueueFamilies, Queues, Swapchain};
+use crate::vulkan::{create_logical_device, create_semaphore, create_shader, create_swapchain, find_suitable_device, get_sample_count_flag, CommandBufferPool, PipelineLayout, PooledCommandBuffer, QueueFamilies, Queues, Swapchain};
 
 pub use vulkan::create_debug_info_callback;
 pub use crate::arena::Arena;
@@ -134,35 +134,32 @@ pub enum Topology {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(i32)]
 pub enum TextureType {
-    Tex1D,
-    Tex2D,
-    Tex3D,
-    Cube,
-    Arr2D,
-    CubeArr,
+    Tex1D = vk::ImageType::_1D.as_raw(),
+    Tex2D = vk::ImageType::_2D.as_raw(),
+    Tex3D = vk::ImageType::_3D.as_raw(),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(i32)]
 pub enum Format {
-    None,
-    RGBA8UNorm,
-    Depth32Float,
-    RG11B10Float,
-    RGB10A2UNorm,
+    None = vk::Format::UNDEFINED.as_raw(),
+    RGBA8UNorm = vk::Format::R8G8B8A8_UNORM.as_raw(),
+    Depth32Float = vk::Format::D32_SFLOAT.as_raw(),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct UsageFlags(u32);
+pub struct TextureUsageFlags(u32);
 bitflags! {
-    impl UsageFlags : u32 {
-        const None = 0x0;
-        const TransferSrc = 0x1;
-        const TransferDst = 0x2;
-        const Sampled = 0x4;
-        const Storage = 0x8;
-        const ColorAttachment = 0x10;
-        const DepthStencilAttachment = 0x20;
+    impl TextureUsageFlags : u32 {
+        const None = vk::ImageUsageFlags::empty().bits();
+        const TransferSrc = vk::ImageUsageFlags::TRANSFER_SRC.bits();
+        const TransferDst = vk::ImageUsageFlags::TRANSFER_DST.bits();
+        const Sampled = vk::ImageUsageFlags::SAMPLED.bits();
+        const Storage = vk::ImageUsageFlags::STORAGE.bits();
+        const ColorAttachment = vk::ImageUsageFlags::COLOR_ATTACHMENT.bits();
+        const DepthStencilAttachment = vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT.bits();
     }
 }
 
@@ -337,8 +334,8 @@ pub struct TextureDesc {
     pub sample_count: u32,
     #[default(Format::None)]
     pub format: Format,
-    #[default(UsageFlags::None)]
-    pub usage: UsageFlags,
+    #[default(TextureUsageFlags::None)]
+    pub usage: TextureUsageFlags,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
@@ -467,6 +464,10 @@ impl<'a, T: Pod> MemoryAllocation for Allocation<'a, T> {
 
 #[derive(Debug)]
 pub struct Texture<'a> {
+    dimensions: (u32, u32, u32),
+    format: Format,
+    image: vk::Image,
+    allocation: vma::Allocation,
     gpu: &'a Gpu,
 }
 
@@ -479,6 +480,12 @@ impl<'a> Texture<'a> {
     }
 }
 
+impl<'a> Drop for Texture<'a> {
+    fn drop(&mut self) {
+        unsafe { self.gpu.allocator.as_ref().unwrap().destroy_image(self.image, self.allocation) };
+    }
+}
+
 #[derive(Debug)]
 pub struct DepthStencilState<'a> {
     gpu: &'a Gpu,
@@ -487,6 +494,20 @@ pub struct DepthStencilState<'a> {
 #[derive(Debug)]
 pub struct BlendState<'a> {
     gpu: &'a Gpu,
+}
+
+#[derive(Debug)]
+pub struct SubmitWait<'a>(vk::Semaphore, u64, &'a Gpu);
+
+impl<'a> SubmitWait<'a> {
+    pub fn wait(self) {
+        let semaphores = [self.0];
+        let values = [self.1];
+        let info = vk::SemaphoreWaitInfo::builder()
+            .semaphores(&semaphores)
+            .values(&values);
+        unsafe { self.2.device.wait_semaphores_khr(&info, u64::MAX).expect("semaphore wait failed") };
+    }
 }
 
 #[derive(Debug)]
@@ -510,9 +531,18 @@ impl<'a> Queue<'a> {
         })
     }
 
-    pub fn submit(&self, buffer:CommandBuffer<'a>, signal_semaphore: &Semaphore<'a>,
-                  signal_value: u64) -> Result<()> {
+    pub fn submit(&self, buffer: CommandBuffer<'a>, signal_semaphore: &Semaphore<'a>,
+                  signal_value: u64) -> Result<SubmitWait<'_>> {
         self.submit_gpu(self.gpu.unwrap(), buffer, signal_semaphore, signal_value)
+    }
+
+    pub fn submit_no_signal(&self, mut buffer: CommandBuffer<'a>) -> Result<SubmitWait<'_>> {
+        let (buffer_semaphore, buffer_value) = Self::buffer_prepare_submit(&mut buffer);
+        self.custom_submit(self.gpu.unwrap(), buffer,
+                           &[buffer_semaphore],
+                           &[buffer_value],
+                           &[], &[], &[])?;
+        Ok(SubmitWait(buffer_semaphore, buffer_value, self.gpu.unwrap()))
     }
 
     fn buffer_prepare_submit(buffer: &mut CommandBuffer<'a>) -> (vk::Semaphore, u64) {
@@ -521,13 +551,14 @@ impl<'a> Queue<'a> {
         (buffer_data.1, buffer_data.2)
     }
 
-    fn submit_gpu(&self, gpu: &Gpu, mut buffer: CommandBuffer<'a>, signal_semaphore: &Semaphore<'a>,
-                  signal_value: u64) -> Result<()> {
+    fn submit_gpu<'b>(&self, gpu: &'b Gpu, mut buffer: CommandBuffer<'a>, signal_semaphore: &Semaphore<'a>,
+                      signal_value: u64) -> Result<SubmitWait<'b>> {
         let (buffer_semaphore, buffer_value) = Self::buffer_prepare_submit(&mut buffer);
         self.custom_submit(gpu, buffer,
                            &[signal_semaphore.semaphore, buffer_semaphore],
                            &[signal_value, buffer_value],
-                           &[], &[], &[])
+                           &[], &[], &[])?;
+        Ok(SubmitWait(buffer_semaphore, buffer_value, gpu))
     }
 
     fn custom_submit(&self, gpu: &Gpu, buffer: CommandBuffer<'a>,
@@ -575,10 +606,25 @@ impl<'a> CommandBuffer<'a> {
     pub fn copy(&mut self, dst: DevicePointer, src: DevicePointer) {
         todo!()
     }
-    pub fn copy_to_texture(&mut self, dst: DevicePointer, src: DevicePointer, tex: &Texture<'_>) {
-        todo!()
+    pub fn copy_to_texture(&mut self, src: DevicePointer, tex: &Texture<'_>) {
+        let (buffer, offset) = self.gpu.device_addr_to_buffer_offset(src)
+            .expect("invalid device pointer");
+        let img_subresource = vk::ImageSubresourceLayers::builder()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .mip_level(0)
+            .base_array_layer(0)
+            .layer_count(1);
+        let img_copy = vk::BufferImageCopy::builder()
+            .buffer_offset(offset)
+            .buffer_row_length(tex.dimensions.0)
+            .buffer_image_height(tex.dimensions.1)
+            .image_offset(vk::Offset3D::default())
+            .image_extent(vk::Extent3D { width: tex.dimensions.0, height: tex.dimensions.1, depth: tex.dimensions.2 })
+            .image_subresource(img_subresource);
+        unsafe { self.gpu.device.cmd_copy_buffer_to_image(
+            self.buffer, buffer, tex.image, vk::ImageLayout::GENERAL, &[img_copy]) };
     }
-    pub fn copy_from_texture(&mut self, dst: DevicePointer, src: DevicePointer, tex: &Texture<'_>) {
+    pub fn copy_from_texture(&mut self, dst: DevicePointer, tex: &Texture<'_>) {
         todo!()
     }
 
@@ -1061,8 +1107,54 @@ impl Gpu {
         })
     }
 
-    pub fn create_texture(&self, desc: TextureDesc, data: DevicePointer) -> Texture<'_> {
-        todo!()
+    pub fn create_texture(&self, desc: TextureDesc, cmd_buf: &mut CommandBuffer<'_>) -> Result<Texture<'_>> {
+        let image_info = vk::ImageCreateInfo::builder()
+            .image_type(vk::ImageType::from_raw(desc.ty as i32))
+            .format(vk::Format::from_raw(desc.format as i32))
+            .extent(vk::Extent3D { width: desc.dimensions.0, height: desc.dimensions.1, depth: desc.dimensions.2 })
+            .mip_levels(desc.mip_count)
+            .array_layers(desc.layer_count)
+            .samples(get_sample_count_flag(desc.sample_count.try_into()
+                .expect("too many samples specified for texture")))
+            .usage(vk::ImageUsageFlags::from_bits(desc.usage.bits()).expect("invalid texture usage flags")
+                | vk::ImageUsageFlags::TRANSFER_DST)
+            .initial_layout(vk::ImageLayout::UNDEFINED);
+
+        let alloc_info = vma::AllocationOptions {
+            usage: vma::MemoryUsage::AutoPreferDevice,
+            preferred_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            ..Default::default()
+        };
+        let (image, allocation) = unsafe {
+            self.allocator.as_ref().unwrap().create_image(image_info, &alloc_info)? };
+
+        let subresource_range = vk::ImageSubresourceRange::builder()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .base_mip_level(0)
+            .level_count(1)
+            .base_array_layer(0)
+            .layer_count(1);
+        let transition = vk::ImageMemoryBarrier2::builder()
+            .image(image)
+            .subresource_range(subresource_range)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS);
+        let transitions = [transition];
+        let dep_info = vk::DependencyInfoKHR::builder()
+            .image_memory_barriers(&transitions);
+        unsafe { self.device.cmd_pipeline_barrier2_khr(cmd_buf.buffer, &dep_info) };
+
+        Ok(Texture {
+            dimensions: desc.dimensions,
+            format: desc.format,
+            image,
+            allocation,
+            gpu: self,
+        })
     }
 
     pub fn create_shader(&self, spirv: &[u8], stage: ShaderStage) -> Result<Shader<'_>> {
