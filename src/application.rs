@@ -17,12 +17,13 @@ pub struct Application<'a> {
     next_frame: u64,
 
     tex: gpu::Texture<'a>,
+    depth_buffer_view: gpu::TextureView<'a>,
     tex_descriptors: gpu::DescriptorHeap<'a>,
     sampler_descriptors: gpu::DescriptorHeap<'a>,
 }
 
 impl<'a> Application<'a> {
-    pub fn new(gpu: &'a gpu::Gpu) -> Result<Self> {
+    pub fn new(gpu: &'a gpu::Gpu, ctx: &dyn gpu::SwapchainContext) -> Result<Self> {
         let queue = gpu.create_queue(gpu::QueueType::Graphics)?;
 
         let img = ImageReader::new(Cursor::new(include_bytes!("../textures/wall.jpg")))
@@ -41,6 +42,17 @@ impl<'a> Application<'a> {
             ..Default::default()
         }, &mut command_buffer)?;
         command_buffer.copy_to_texture(img_alloc.device(), &tex);
+
+        let dims = ctx.get_window_size();
+        let depth_buffer = Box::new(gpu.create_texture(gpu::TextureDesc {
+            ty: gpu::TextureType::Tex2D,
+            dimensions: (dims.0, dims.1, 1),
+            format: gpu::Format::Depth32Float,
+            usage: gpu::TextureUsageFlags::DepthStencilAttachment,
+            layout: gpu::TextureLayout::DepthStencilAttachmentOptimal,
+            ..Default::default()
+        }, &mut command_buffer)?);
+        let depth_buffer_view = depth_buffer.view()?;
 
         command_buffer.end_recording()?;
 
@@ -66,6 +78,7 @@ impl<'a> Application<'a> {
             next_frame: 1,
 
             tex,
+            depth_buffer_view,
             tex_descriptors,
             sampler_descriptors,
         })
@@ -135,6 +148,12 @@ impl<'a> Application<'a> {
 
         let mut swapchain_target = self.gpu.next_swapchain_image(ctx, &mut command_buffer)?;
         swapchain_target.clear_value = gpu::ClearValue::Color([0.08, 0.0, 0.0, 1.0]);
+        let depth_target = gpu::Target {
+            view: self.depth_buffer_view,
+            load_op: gpu::Load::Clear,
+            store_op: gpu::Store::Store,
+            clear_value: gpu::ClearValue::DepthStencil(0.0, 0),
+        };
         let render_pass_desc = gpu::RenderPassDesc {
             color_targets: &[swapchain_target],
             ..Default::default()
@@ -159,5 +178,9 @@ impl<'a> Application<'a> {
         self.next_frame += 1;
 
         Ok(())
+    }
+
+    pub fn resize(&mut self, ctx: &dyn gpu::SwapchainContext) {
+        todo!()
     }
 }

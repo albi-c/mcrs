@@ -150,7 +150,6 @@ pub enum TextureType {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 #[repr(i32)]
 pub enum Format {
-    None = vk::Format::UNDEFINED.as_raw(),
     RGBA8UNorm = vk::Format::R8G8B8A8_UNORM.as_raw(),
     Depth32Float = vk::Format::D32_SFLOAT.as_raw(),
 }
@@ -332,14 +331,6 @@ pub struct BlendDesc {
     pub color_write_mask: ColorComponents,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
-pub struct ColorTarget {
-    #[default(Format::None)]
-    pub format: Format,
-    #[default = 0xf]
-    pub write_mask: u8,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClearValue {
     Color([f32; 4]),
@@ -438,10 +429,12 @@ pub struct TextureDesc {
     pub layer_count: u32,
     #[default = 1]
     pub sample_count: u32,
-    #[default(Format::None)]
+    #[default(Format::RGBA8UNorm)]
     pub format: Format,
     #[default(TextureUsageFlags::None)]
     pub usage: TextureUsageFlags,
+    #[default(TextureLayout::General)]
+    pub layout: TextureLayout,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
@@ -462,7 +455,7 @@ pub struct SamplerDesc {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
 pub struct ViewDesc {
-    #[default(Format::None)]
+    #[default(Format::RGBA8UNorm)]
     pub format: Format,
     #[default = 0]
     pub base_mip: u8,
@@ -626,14 +619,21 @@ impl<'a> IndexMut<usize> for DescriptorHeap<'a> {
 #[derive(Debug, Default)]
 pub struct TextureView<'a> {
     view: vk::ImageView,
-    texture: Option<&'a Texture<'a>>,
+    aspect: vk::ImageAspectFlags,
+    texture: Option<Box<Texture<'a>>>,
 }
 
 impl<'a> Drop for TextureView<'a> {
     fn drop(&mut self) {
-        if let Some(tex) = self.texture {
+        if let Some(tex) = &self.texture {
             unsafe { tex.gpu.device.destroy_image_view(self.view, None) };
         }
+    }
+}
+
+impl<'a> TextureView<'a> {
+    fn destroy(self, gpu: &Gpu) {
+        unsafe { gpu.device.destroy_image_view(self.view, None) };
     }
 }
 
@@ -643,6 +643,7 @@ pub struct Texture<'a> {
     format: Format,
     ty: TextureType,
     image: vk::Image,
+    aspect: vk::ImageAspectFlags,
     allocation: vma::Allocation,
     gpu: &'a Gpu,
 }
@@ -660,9 +661,16 @@ impl<'a> Texture<'a> {
         }
     }
 
-    pub fn view(&self) -> Result<TextureView<'_>> {
+    fn aspect_flags(format: Format) -> vk::ImageAspectFlags {
+        match format {
+            Format::RGBA8UNorm => vk::ImageAspectFlags::COLOR,
+            Format::Depth32Float => vk::ImageAspectFlags::DEPTH,
+        }
+    }
+
+    fn create_view(&self) -> Result<vk::ImageView> {
         let subresource_range = vk::ImageSubresourceRange::builder()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .aspect_mask(self.aspect)
             .level_count(1)
             .layer_count(1);
         let view_info = vk::ImageViewCreateInfo::builder()
@@ -670,10 +678,14 @@ impl<'a> Texture<'a> {
             .view_type(Self::view_type(self.ty))
             .format(vk::Format::from_raw(self.format as i32))
             .subresource_range(subresource_range);
-        let view = unsafe { self.gpu.device.create_image_view(&view_info, None)? };
+        Ok(unsafe { self.gpu.device.create_image_view(&view_info, None)? })
+    }
 
+    pub fn view(self: Box<Self>) -> Result<TextureView<'a>> {
+        let view = self.create_view()?;
         Ok(TextureView {
             view,
+            aspect: self.aspect,
             texture: Some(self),
         })
     }
@@ -686,7 +698,11 @@ impl<'a> Texture<'a> {
         assert_eq!(descriptor.len(), self.view_descriptor_size(),
                    "incorrect buffer size for texture descriptor");
 
-        let view = self.view()?;
+        let view = TextureView {
+            view: self.create_view()?,
+            aspect: self.aspect,
+            texture: None,
+        };
 
         let image_info = vk::DescriptorImageInfo::builder()
             .sampler(vk::Sampler::null())
@@ -699,6 +715,8 @@ impl<'a> Texture<'a> {
                 sampled_image: &raw const image_info,
             });
         unsafe { self.gpu.device.get_descriptor_ext(&info, descriptor) };
+
+        view.destroy(self.gpu);
 
         Ok(())
     }
@@ -837,7 +855,7 @@ impl<'a> CommandBuffer<'a> {
         let (buffer, offset) = self.gpu.device_addr_to_buffer_offset(src)
             .expect("invalid device pointer");
         let img_subresource = vk::ImageSubresourceLayers::builder()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .aspect_mask(tex.aspect)
             .mip_level(0)
             .base_array_layer(0)
             .layer_count(1);
@@ -946,9 +964,10 @@ impl<'a> CommandBuffer<'a> {
 
     fn image_barrier_raw(&mut self, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout, image: vk::Image,
                          src_stage: vk::PipelineStageFlags, dst_stage: vk::PipelineStageFlags,
-                         src_access: vk::AccessFlags, dst_access: vk::AccessFlags) {
+                         src_access: vk::AccessFlags, dst_access: vk::AccessFlags,
+                         aspect: vk::ImageAspectFlags) {
         let subresource_range = vk::ImageSubresourceRange::builder()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .aspect_mask(aspect)
             .base_mip_level(0)
             .level_count(1)
             .base_array_layer(0)
@@ -991,7 +1010,8 @@ impl<'a> CommandBuffer<'a> {
                 vk::AccessFlags::COLOR_ATTACHMENT_READ
             } else {
                 vk::AccessFlags::empty()
-            }
+            },
+            vk::ImageAspectFlags::COLOR,
         );
     }
 
@@ -1007,6 +1027,7 @@ impl<'a> CommandBuffer<'a> {
             vk::PipelineStageFlags::from_bits(dst_stage.bits()).unwrap(),
             vk::AccessFlags::from_bits(src_access.bits()).unwrap(),
             vk::AccessFlags::from_bits(dst_access.bits()).unwrap(),
+            texture.aspect,
         )
     }
 
@@ -1446,8 +1467,9 @@ impl Gpu {
         let (image, allocation) = unsafe {
             self.allocator.as_ref().unwrap().create_image(image_info, &alloc_info)? };
 
+        let aspect = Texture::aspect_flags(desc.format);
         let subresource_range = vk::ImageSubresourceRange::builder()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .aspect_mask(aspect)
             .base_mip_level(0)
             .level_count(1)
             .base_array_layer(0)
@@ -1456,7 +1478,7 @@ impl Gpu {
             .image(image)
             .subresource_range(subresource_range)
             .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::GENERAL)  // TODO: use optimal layout for rendering
+            .new_layout(vk::ImageLayout::from_raw(desc.layout as i32))
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
@@ -1469,6 +1491,7 @@ impl Gpu {
         Ok(Texture {
             dimensions: desc.dimensions,
             format: desc.format,
+            aspect,
             ty: desc.ty,
             image,
             allocation,
@@ -1588,6 +1611,7 @@ impl Gpu {
         Ok(Target {
             view: TextureView {
                 view: swapchain.image_views[next_image_index],
+                aspect: vk::ImageAspectFlags::COLOR,
                 texture: None,
             },
             load_op: Load::Clear,

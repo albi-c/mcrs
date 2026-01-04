@@ -151,7 +151,7 @@ fn main() -> Result<()> {
         .build(&event_loop)?;
 
     let app = App::create(&window)?;
-    let mut application = Application::new(&app.gpu)?;
+    let mut application = Application::new(&app.gpu, &app.get_swapchain_context())?;
     event_loop.run_on_demand(|event, target| {
         match event {
             Event::AboutToWait => window.request_redraw(),
