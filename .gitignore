@@ -1,2 +1,4 @@
 /target
 shaders/*.spv
+/main_sponza
+/pkg_a_curtains

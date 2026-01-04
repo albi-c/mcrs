@@ -117,8 +117,8 @@ impl<'a> Application<'a> {
 
     fn update(&mut self, dt: f32) {
         let front = self.camera_front;
-        let up = -Vec3::Y;
-        let right = up.cross(front);
+        let up = Vec3::Y;
+        let right = front.cross(up);
 
         let mut vel = Vec3::new(0.0, 0.0, 0.0);
         if self.get_key(KeyCode::KeyW) {
@@ -176,10 +176,11 @@ impl<'a> Application<'a> {
             view_size.0 as f32 / view_size.1 as f32,
             0.001f32,
         );
+        let mat_flip = Mat4::from_scale(Vec3::new(1.0, -1.0, 1.0));
         let mat_view = self.get_view_matrix();
         let mat_model = Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0))
             * Mat4::from_rotation_y(time as f32 * 0.5);
-        let mat_mvp = mat_perspective * mat_view * mat_model;
+        let mat_mvp = mat_perspective * mat_flip * mat_view * mat_model;
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
         struct Vertex(Vec3, u32);
@@ -277,9 +278,8 @@ impl<'a> Application<'a> {
     pub fn mouse_move(&mut self, delta: (f64, f64)) {
         const SENSITIVITY: f32 = 0.5;
         let motion = Vec2::new(delta.0 as f32, delta.1 as f32) * SENSITIVITY;
-        self.camera_look += motion;
-        self.camera_look.x = self.camera_look.x.rem_euclid(360.0);
-        self.camera_look.y = self.camera_look.y.clamp(-89.99, 89.99);
+        self.camera_look.x = (self.camera_look.x + motion.x).rem_euclid(360.0);
+        self.camera_look.y = (self.camera_look.y - motion.y).clamp(-89.99, 89.99);
 
         let yaw = self.camera_look.x.to_radians();
         let pitch = self.camera_look.y.to_radians();
