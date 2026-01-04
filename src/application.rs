@@ -103,25 +103,23 @@ impl<'a> Application<'a> {
         let mat_model = Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0))
             * Mat4::from_rotation_y(time as f32 * 0.5);
         let mat_mvp = mat_perspective * mat_view * mat_model;
-        let vertex_data_positions = arena.alloc_data(&[
-            Vec3A::new(-0.5, -0.5, 0.0),
-            Vec3A::new(0.5, -0.5, 0.0),
-            Vec3A::new(0.5, 0.5, 0.0),
-            Vec3A::new(-0.5, 0.5, 0.0),
-        ])?;
-        let vertex_data_uvs = arena.alloc_data(&[
-            Self::pack_tex_vertex(0.0, 0.0, 0),
-            Self::pack_tex_vertex(1.0, 0.0, 0),
-            Self::pack_tex_vertex(1.0, 1.0, 0),
-            Self::pack_tex_vertex(0.0, 1.0, 0),
+        #[repr(C)]
+        #[derive(Copy, Clone, Debug, Pod, Zeroable)]
+        struct Vertex(Vec3, u32);
+        const { assert!(size_of::<Vertex>() == 16) };
+        let vertex_data_vertices = arena.alloc_data(&[
+            Vertex(Vec3::new(-0.5, -0.5, 0.0), Self::pack_tex_vertex(0.0, 0.0, 0)),
+            Vertex(Vec3::new(0.5, -0.5, 0.0), Self::pack_tex_vertex(1.0, 0.0, 0)),
+            Vertex(Vec3::new(0.5, 0.5, 0.0), Self::pack_tex_vertex(1.0, 1.0, 0)),
+            Vertex(Vec3::new(-0.5, 0.5, 0.0), Self::pack_tex_vertex(0.0, 1.0, 0)),
         ])?;
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-        struct VertexData(Mat4, DevicePointer, DevicePointer);
+        struct VertexData(Mat4, DevicePointer, u64);
         let vertex_data = arena.alloc_data(&[VertexData(
             mat_mvp,
-            vertex_data_positions.device(),
-            vertex_data_uvs.device(),
+            vertex_data_vertices.device(),
+            0,
         )])?;
 
         #[repr(C)]
