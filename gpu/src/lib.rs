@@ -314,24 +314,6 @@ pub struct DepthStencilDesc {
     pub back: Stencil,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
-pub struct BlendDesc {
-    #[default(Blend::Add)]
-    pub color_op: Blend,
-    #[default(Factor::One)]
-    pub src_color_factor: Factor,
-    #[default(Factor::Zero)]
-    pub dst_color_factor: Factor,
-    #[default(Blend::Add)]
-    pub alpha_op: Blend,
-    #[default(Factor::One)]
-    pub src_alpha_factor: Factor,
-    #[default(Factor::Zero)]
-    pub dst_alpha_factor: Factor,
-    #[default(ColorComponents::All)]
-    pub color_write_mask: ColorComponents,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClearValue {
     Color([f32; 4]),
@@ -380,6 +362,34 @@ impl ClearValue {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
+pub struct DepthTestDesc {
+    #[default(Op::Less)]
+    pub op: Op,
+    #[default = true]
+    pub write: bool,
+    #[default = false]
+    pub bias: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
+pub struct BlendDesc {
+    #[default(Blend::Add)]
+    pub color_op: Blend,
+    #[default(Factor::One)]
+    pub src_color_factor: Factor,
+    #[default(Factor::Zero)]
+    pub dst_color_factor: Factor,
+    #[default(Blend::Add)]
+    pub alpha_op: Blend,
+    #[default(Factor::One)]
+    pub src_alpha_factor: Factor,
+    #[default(Factor::Zero)]
+    pub dst_alpha_factor: Factor,
+    #[default(ColorComponents::All)]
+    pub color_write_mask: ColorComponents,
+}
+
 #[derive(Debug, SmartDefault)]
 pub struct Target<'a> {
     pub view: TextureView<'a>,
@@ -400,6 +410,7 @@ pub struct RenderPassDesc<'a> {
     pub layer_count: u32,
     #[default = 0]
     pub view_mask: u32,
+
     #[default(Topology::TriangleList)]
     pub topology: Topology,
     #[default = false]
@@ -412,6 +423,8 @@ pub struct RenderPassDesc<'a> {
     pub dual_source_blending: bool,
     #[default = 1]
     pub sample_count: u8,
+
+    pub depth_test_state: Option<&'a DepthTestDesc>,
     pub blend_state: Option<&'a BlendDesc>,
     pub color_targets: &'a [Target<'a>],
     pub depth_target: Option<&'a Target<'a>>,
@@ -1070,13 +1083,21 @@ impl<'a> CommandBuffer<'a> {
             // TODO: use values from desc
 
             dev.cmd_set_stencil_test_enable_ext(self.buffer, false);
+            // TODO: for all attachments
             dev.cmd_set_color_blend_enable_ext(self.buffer, 0, &[vk::FALSE]);
             dev.cmd_set_color_write_mask_ext(self.buffer, 0, &[vk::ColorComponentFlags::all()]);
 
-            dev.cmd_set_depth_compare_op_ext(self.buffer, vk::CompareOp::LESS);
-            dev.cmd_set_depth_test_enable_ext(self.buffer, false);
-            dev.cmd_set_depth_write_enable_ext(self.buffer, false);
-            dev.cmd_set_depth_bias_enable_ext(self.buffer, false);
+            if let Some(d) = desc.depth_test_state {
+                dev.cmd_set_depth_compare_op_ext(self.buffer, vk::CompareOp::from_raw(d.op as i32));
+                dev.cmd_set_depth_test_enable_ext(self.buffer, true);
+                dev.cmd_set_depth_write_enable_ext(self.buffer, d.write);
+                dev.cmd_set_depth_bias_enable_ext(self.buffer, d.bias);
+            } else {
+                dev.cmd_set_depth_compare_op_ext(self.buffer, vk::CompareOp::ALWAYS);
+                dev.cmd_set_depth_test_enable_ext(self.buffer, false);
+                dev.cmd_set_depth_write_enable_ext(self.buffer, false);
+                dev.cmd_set_depth_bias_enable_ext(self.buffer, false);
+            }
             // dev.cmd_set_depth_clip_enable_ext(self.buffer, false);
 
             let viewport = vk::Viewport::builder()

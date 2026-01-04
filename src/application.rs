@@ -104,7 +104,11 @@ impl<'a> Application<'a> {
         let arena = self.get_frame_arena();
         arena.reset();
 
-        let indices = arena.alloc_data(&[0u32, 1, 2, 0, 2, 3])?;
+        let index_data = &[
+            0u32, 1, 2, 0, 2, 3,
+            4u32, 5, 6, 4, 6, 7,
+        ];
+        let indices = arena.alloc_data(index_data)?;
 
         let view_size = gpu::SwapchainContext::get_window_size(ctx);
         let mat_perspective = Mat4::perspective_infinite_rh(
@@ -129,6 +133,11 @@ impl<'a> Application<'a> {
             Vertex(Vec3::new(0.5, -0.5, 0.0), Self::pack_tex_vertex(1.0, 0.0, 0)),
             Vertex(Vec3::new(0.5, 0.5, 0.0), Self::pack_tex_vertex(1.0, 1.0, 0)),
             Vertex(Vec3::new(-0.5, 0.5, 0.0), Self::pack_tex_vertex(0.0, 1.0, 0)),
+
+            Vertex(Vec3::new(0.0, -0.5, -0.5), Self::pack_tex_vertex(0.0, 0.0, 0)),
+            Vertex(Vec3::new(1.0, -0.5, -0.5), Self::pack_tex_vertex(1.0, 0.0, 0)),
+            Vertex(Vec3::new(1.0, 0.5, -0.5), Self::pack_tex_vertex(1.0, 1.0, 0)),
+            Vertex(Vec3::new(0.0, 0.5, -0.5), Self::pack_tex_vertex(0.0, 1.0, 0)),
         ])?;
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
@@ -158,7 +167,11 @@ impl<'a> Application<'a> {
             store_op: gpu::Store::Store,
             clear_value: gpu::ClearValue::DepthStencil(1.0, 0),
         };
+        let depth_test_desc = gpu::DepthTestDesc {
+            ..Default::default()
+        };
         let render_pass_desc = gpu::RenderPassDesc {
+            depth_test_state: Some(&depth_test_desc),
             color_targets: &[swapchain_target],
             depth_target: Some(&depth_target),
             ..Default::default()
@@ -172,7 +185,7 @@ impl<'a> Application<'a> {
          );
         command_buffer.draw_indexed(
             vertex_data.device(), pixel_data.device(),
-            indices.device(), 6, gpu::IndexType::U32);
+            indices.device(), index_data.len() as u32, gpu::IndexType::U32);
         command_buffer.end_render_pass();
 
         command_buffer.end_recording()?;
