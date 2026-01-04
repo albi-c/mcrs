@@ -2,27 +2,21 @@
 
 #include "common.glsl"
 
-layout(location = 0) out vec3 outColor;
-layout(location = 1) out vec2 outUv;
+layout(location = 0) out vec2 outUv;
+layout(location = 1) flat out uint outTex;
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer VertDataPositions {
-    vec2 positions[];
+    vec4 positions[];
 };
 
-layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer VertDataColors {
-    vec4 colors[];
-};
-
-layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer VertDataUvs {
-    vec2 uvs[];
+layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer VertDataTex {
+    uint tex[];
 };
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer VertData {
+    mat4 mvp;
     VertDataPositions positions;
-    VertDataColors colors;
-    VertDataUvs uvs;
-    uint64_t _padding;
-    mat2 matrix;
+    VertDataTex tex;
 };
 
 layout(std430, push_constant) uniform Data {
@@ -31,7 +25,11 @@ layout(std430, push_constant) uniform Data {
 } data;
 
 void main() {
-    gl_Position = vec4(data.vert.matrix *  data.vert.positions.positions[gl_VertexIndex], 0.0, 1.0);
-    outColor = data.vert.colors.colors[gl_VertexIndex].xyz;
-    outUv = data.vert.uvs.uvs[gl_VertexIndex];
+    VertData d = data.vert;
+    gl_Position = d.mvp * vec4(d.positions.positions[gl_VertexIndex].xyz, 1.0);
+    uint tex = d.tex.tex[gl_VertexIndex];
+    float u = float(tex & 0xff);
+    float v = float((tex >> 8) & 0xff);
+    outUv = round(vec2(u, v)) / 8.0;
+    outTex = tex >> 16;
 }

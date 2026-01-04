@@ -556,7 +556,8 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         .runtime_descriptor_array(true)
         .buffer_device_address(true)
         .timeline_semaphore(true)
-        .descriptor_indexing(true);
+        .descriptor_indexing(true)
+        .shader_sampled_image_array_non_uniform_indexing(true);
 
     let mut info_13 = vk::PhysicalDeviceVulkan13Features::builder()
         .dynamic_rendering(true)

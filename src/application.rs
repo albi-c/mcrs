@@ -1,7 +1,7 @@
 use std::io::Cursor;
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat2, Vec2, Vec3A, Vec4};
+use glam::{Mat4, Vec2, Vec3, Vec3A, Vec4};
 use image::{EncodableLayout, ImageReader};
 use gpu::{DevicePointer, MemoryAllocation, MemoryAllocator};
 
@@ -75,6 +75,10 @@ impl<'a> Application<'a> {
         &self.frame_arenas[(self.next_frame % FRAMES_IN_FLIGHT) as usize]
     }
 
+    const fn pack_tex_vertex(u: f32, v: f32, tex: u16) -> u32 {
+        ((tex as u32) << 16) | (((v * 8.0) as u32 & 0xff) << 8) | ((u * 8.0) as u32 & 0xff)
+    }
+
     pub fn render(&mut self, time: f64, ctx: &dyn gpu::SwapchainContext) -> Result<()> {
         if self.next_frame > FRAMES_IN_FLIGHT {
             self.frame_semaphore.wait(self.next_frame - FRAMES_IN_FLIGHT)?;
@@ -83,43 +87,48 @@ impl<'a> Application<'a> {
         let arena = self.get_frame_arena();
         arena.reset();
 
-        let indices = arena.alloc_data(&[0u32, 1, 2])?;
+        let indices = arena.alloc_data(&[0u32, 1, 2, 0, 2, 3])?;
 
+        let view_size = gpu::SwapchainContext::get_window_size(ctx);
+        let mat_perspective = Mat4::perspective_infinite_rh(
+            100.0f32.to_radians(),
+            view_size.0 as f32 / view_size.1 as f32,
+            0.001f32,
+        );
+        let mat_view = Mat4::look_at_rh(
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.5, 0.0, -1.0).normalize(),
+            Vec3::Y,
+        );
+        let mat_model = Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0))
+            * Mat4::from_rotation_y(time as f32 * 0.5);
+        let mat_mvp = mat_perspective * mat_view * mat_model;
         let vertex_data_positions = arena.alloc_data(&[
-            Vec2::new(0.0, -0.5),
-            Vec2::new(0.5, 0.5),
-            Vec2::new(-0.5, 0.5),
-        ])?;
-        let vertex_data_colors = arena.alloc_data(&[
-            Vec3A::new(1.0, 0.0, 0.0),
-            Vec3A::new(0.0, 1.0, 0.0),
-            Vec3A::new(0.0, 0.0, 1.0),
+            Vec3A::new(-0.5, -0.5, 0.0),
+            Vec3A::new(0.5, -0.5, 0.0),
+            Vec3A::new(0.5, 0.5, 0.0),
+            Vec3A::new(-0.5, 0.5, 0.0),
         ])?;
         let vertex_data_uvs = arena.alloc_data(&[
-            Vec2::new(0.5, 0.0),
-            Vec2::new(1.0, 1.0),
-            Vec2::new(0.0, 1.0),
+            Self::pack_tex_vertex(0.0, 0.0, 0),
+            Self::pack_tex_vertex(1.0, 0.0, 0),
+            Self::pack_tex_vertex(1.0, 1.0, 0),
+            Self::pack_tex_vertex(0.0, 1.0, 0),
         ])?;
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-        struct VertexData(DevicePointer, DevicePointer, DevicePointer, u64, Mat2);
+        struct VertexData(Mat4, DevicePointer, DevicePointer);
         let vertex_data = arena.alloc_data(&[VertexData(
+            mat_mvp,
             vertex_data_positions.device(),
-            vertex_data_colors.device(),
             vertex_data_uvs.device(),
-            0,
-            Mat2::from_angle(time as f32),
         )])?;
 
-        let pixel_data_colors = arena.alloc_data(&[
-            Vec4::new(0.0, 0.0, 1.0, 0.0),
-            Vec4::new(1.0, 1.0, 0.5, 1.0),
-        ])?;
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-        struct PixelData(DevicePointer);
+        struct PixelData(Vec3A);
         let pixel_data = arena.alloc_data(&[PixelData(
-            pixel_data_colors.device(),
+            Vec3A::new(1.0, 1.0, 1.0),
         )])?;
 
         let mut command_buffer = self.queue.create_buffer()?;
@@ -139,7 +148,7 @@ impl<'a> Application<'a> {
          );
         command_buffer.draw_indexed(
             vertex_data.device(), pixel_data.device(),
-            indices.device(), 3, gpu::IndexType::U32);
+            indices.device(), 6, gpu::IndexType::U32);
         command_buffer.end_render_pass(image_index);
 
         command_buffer.end_recording()?;
