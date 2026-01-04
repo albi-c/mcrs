@@ -839,7 +839,9 @@ impl<'a> CommandBuffer<'a> {
         todo!()
     }
 
-    fn image_barrier(&mut self, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout, image: vk::Image) {
+    fn image_barrier(&mut self, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout, image: vk::Image,
+                     src_stage: vk::PipelineStageFlags, dst_stage: vk::PipelineStageFlags,
+                     before_render: bool) {
         let subresource_range = vk::ImageSubresourceRange::builder()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .base_mip_level(0)
@@ -848,18 +850,22 @@ impl<'a> CommandBuffer<'a> {
             .layer_count(1);
 
         let barrier = vk::ImageMemoryBarrier::builder()
-            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
             .old_layout(old_layout)
             .new_layout(new_layout)
             .image(image)
             .subresource_range(subresource_range);
+        let barrier = if before_render {
+            barrier.dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ)
+        } else {
+            barrier.src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+        };
 
         let barriers = [barrier];
         unsafe {
             self.gpu.device.cmd_pipeline_barrier(
                 self.buffer,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                src_stage,
+                dst_stage,
                 vk::DependencyFlags::empty(),
                 &[] as &[vk::MemoryBarrier],
                 &[] as &[vk::BufferMemoryBarrier],
@@ -877,7 +883,9 @@ impl<'a> CommandBuffer<'a> {
 
         self.image_barrier(
             vk::ImageLayout::UNDEFINED, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            self.gpu.swapchain.borrow().images[framebuffer]);
+            self.gpu.swapchain.borrow().images[framebuffer],
+            vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            true);
 
         let render_area = vk::Rect2D::builder()
             .offset(vk::Offset2D { x: desc.render_area_offset.0, y: desc.render_area_offset.1 })
@@ -950,7 +958,9 @@ impl<'a> CommandBuffer<'a> {
 
         self.image_barrier(
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR,
-            self.gpu.swapchain.borrow().images[framebuffer]);
+            self.gpu.swapchain.borrow().images[framebuffer],
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            false);
     }
 
     pub fn draw_instanced(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
@@ -1312,7 +1322,7 @@ impl Gpu {
             .image(image)
             .subresource_range(subresource_range)
             .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)  // TODO: use optimal layout for rendering
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)

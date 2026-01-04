@@ -1,7 +1,7 @@
 use std::io::Cursor;
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec2, Vec3, Vec3A, Vec4};
+use glam::{Mat4, Vec3, Vec3A};
 use image::{EncodableLayout, ImageReader};
 use gpu::{DevicePointer, MemoryAllocation, MemoryAllocator};
 
