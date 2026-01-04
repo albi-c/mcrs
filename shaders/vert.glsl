@@ -32,8 +32,8 @@ void main() {
     Vertex vertex = d.vertices.data[gl_VertexIndex];
     gl_Position = d.mvp * vec4(vertex.x, vertex.y, vertex.z, 1.0);
     uint tex = vertex.tex;
-    float u = float(tex & 0xff);
-    float v = float((tex >> 8) & 0xff);
-    outUv = round(vec2(u, v)) / 8.0;
-    outTex = tex >> 16;
+    float u = float(tex & ((1 << 10) - 1));
+    float v = float((tex >> 10) & ((1 << 10) - 1));
+    outUv = round(vec2(u, v)) / 512.0;
+    outTex = tex >> 20;
 }

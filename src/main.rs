@@ -1,4 +1,5 @@
 mod application;
+mod gltf;
 
 use std::cell::Cell;
 use std::collections::HashSet;

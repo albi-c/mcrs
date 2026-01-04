@@ -1,5 +1,8 @@
 use std::collections::HashMap;
-use std::io::Cursor;
+use std::fmt::Debug;
+use std::fs;
+use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::path::Path;
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2, Vec3, Vec3A};
@@ -9,6 +12,84 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use gpu::{MemoryAllocation, MemoryAllocator};
 
 const FRAMES_IN_FLIGHT: u64 = 2;
+
+fn load_obj<C>(path: impl AsRef<Path> + Debug,
+               push_vertex: impl Fn(&mut C, usize, Vec3, Vec2, Vec3),
+               make_vertex_container: impl FnOnce(usize) -> Result<C>) -> Result<C> {
+    let (models, _) = tobj::load_obj(path, &tobj::LoadOptions {
+        triangulate: true,
+        ..Default::default()
+    })?;
+
+    let mut length = 0;
+    for model in &models {
+        length += model.mesh.indices.len();;
+        assert_eq!(model.mesh.indices.len(), model.mesh.texcoord_indices.len());
+        assert_eq!(model.mesh.indices.len(), model.mesh.normal_indices.len());
+    }
+
+    let mut vertices = make_vertex_container(length)?;
+    let mut index = 0;
+    for model in models {
+        let mesh = model.mesh;
+        for (i_p, (i_t, i_n)) in mesh.indices.into_iter()
+            .zip(mesh.texcoord_indices.into_iter().zip(mesh.normal_indices.into_iter())) {
+            let b_p = i_p as usize * 3;
+            let b_t = i_t as usize * 2;
+            let b_n = i_n as usize * 3;
+            push_vertex(
+                &mut vertices,
+                index,
+                Vec3::new(
+                    mesh.positions[b_p + 0],
+                    mesh.positions[b_p + 1],
+                    mesh.positions[b_p + 2],
+                ),
+                Vec2::new(
+                    mesh.texcoords[b_t + 0],
+                    mesh.texcoords[b_t + 1],
+                ),
+                Vec3::new(
+                    mesh.normals[b_n + 0],
+                    mesh.normals[b_n + 1],
+                    mesh.normals[b_n + 2],
+                ),
+            );
+            index += 1;
+            assert!(index <= length);
+        }
+    }
+
+    Ok(vertices)
+}
+
+fn load_obj_cached<V: Pod, C>(path: impl AsRef<Path> + Debug, cache_path: impl AsRef<Path>,
+                              make_vertex: impl Fn(Vec3, Vec2, Vec3) -> V,
+                              make_vertex_container: impl FnOnce(usize) -> Result<C>,
+                              vertex_container_slice: impl Fn(&mut C) -> &mut [V]) -> Result<C> {
+    if fs::exists(&cache_path)? {
+        let mut file = fs::File::open(cache_path)?;
+        let length_bytes = file.seek(SeekFrom::End(0))? as usize;
+        file.seek(SeekFrom::Start(0))?;
+        let count = length_bytes / size_of::<V>();
+        let mut container = make_vertex_container(count)?;
+        let slice = vertex_container_slice(&mut container);
+        assert_eq!(slice.len(), count);
+        file.read_exact(bytemuck::cast_slice_mut(slice))?;
+        Ok(container)
+    } else {
+        let mut container = load_obj(path, |container, index, pos, uv, nor| {
+            vertex_container_slice(container)[index] = make_vertex(pos, uv, nor)
+        }, make_vertex_container)?;
+        let slice = vertex_container_slice(&mut container);
+        fs::write(cache_path, bytemuck::cast_slice(slice))?;
+        Ok(container)
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct Vertex(Vec3, u32);
 
 pub struct Application<'a> {
     gpu: &'a gpu::Gpu,
@@ -24,6 +105,7 @@ pub struct Application<'a> {
     depth_buffer: gpu::Texture<'a>,
     tex_descriptors: gpu::DescriptorHeap<'a>,
     sampler_descriptors: gpu::DescriptorHeap<'a>,
+    model: gpu::Allocation<'a, Vertex>,
 
     keys: HashMap<PhysicalKey, bool>,
     camera_pos: Vec3,
@@ -35,7 +117,7 @@ impl<'a> Application<'a> {
     pub fn new(gpu: &'a gpu::Gpu, ctx: &dyn gpu::SwapchainContext) -> Result<Self> {
         let queue = gpu.create_queue(gpu::QueueType::Graphics)?;
 
-        let img = ImageReader::new(Cursor::new(include_bytes!("../textures/wall.jpg")))
+        let img = ImageReader::new(Cursor::new(include_bytes!("../models/viking_room/viking_room.png")))
             .with_guessed_format()?.decode()?.into_rgba8();
         let img_alloc = gpu.allocator().alloc_data(img.as_bytes())?;
 
@@ -66,6 +148,12 @@ impl<'a> Application<'a> {
             ..Default::default()
         }, &mut sampler_descriptors[0])?;
 
+        let model = load_obj_cached(
+            "models/Sponza/sponza.obj", "models/sponza.cache",
+            |pos, uv, _| Vertex(pos, Self::pack_tex_vertex(uv.x, uv.y, 0)),
+            |n| gpu.alloc::<Vertex>(n),
+            |container| container.host_mut())?;
+
         Ok(Self {
             gpu,
             vertex_shader: gpu.create_shader(include_bytes!("../shaders/vert.spv"), gpu::ShaderStage::Vertex)?,
@@ -82,6 +170,7 @@ impl<'a> Application<'a> {
             depth_buffer,
             tex_descriptors,
             sampler_descriptors,
+            model,
 
             keys: HashMap::new(),
             camera_pos: Vec3::new(0.0, 0.0, 0.0),
@@ -108,7 +197,7 @@ impl<'a> Application<'a> {
     }
 
     const fn pack_tex_vertex(u: f32, v: f32, tex: u16) -> u32 {
-        ((tex as u32) << 16) | (((v * 8.0) as u32 & 0xff) << 8) | ((u * 8.0) as u32 & 0xff)
+        ((tex as u32) << 20) | (((v * 512.0) as u32 & ((1 << 10) - 1)) << 10) | ((u * 512.0) as u32 & ((1 << 10) - 1))
     }
 
     fn get_key(&self, code: KeyCode) -> bool {
@@ -120,18 +209,21 @@ impl<'a> Application<'a> {
         let up = Vec3::Y;
         let right = front.cross(up);
 
+        let move_front = Vec3::new(front.x, 0.0, front.z).normalize();
+        let move_right = Vec3::new(right.x, 0.0, right.z).normalize();
+
         let mut vel = Vec3::new(0.0, 0.0, 0.0);
         if self.get_key(KeyCode::KeyW) {
-            vel += front;
+            vel += move_front;
         }
         if self.get_key(KeyCode::KeyS) {
-            vel -= front;
+            vel -= move_front;
         }
         if self.get_key(KeyCode::KeyD) {
-            vel += right;
+            vel += move_right;
         }
         if self.get_key(KeyCode::KeyA) {
-            vel -= right;
+            vel -= move_right;
         }
         if self.get_key(KeyCode::Space) {
             vel += up;
@@ -164,12 +256,6 @@ impl<'a> Application<'a> {
         let arena = self.get_frame_arena();
         arena.reset();
 
-        let index_data = &[
-            0u32, 1, 2, 0, 2, 3,
-            4u32, 5, 6, 4, 6, 7,
-        ];
-        let indices = arena.alloc_data(index_data)?;
-
         let view_size = gpu::SwapchainContext::get_window_size(ctx);
         let mat_perspective = Mat4::perspective_infinite_rh(
             100.0f32.to_radians(),
@@ -179,29 +265,17 @@ impl<'a> Application<'a> {
         let mat_flip = Mat4::from_scale(Vec3::new(1.0, -1.0, 1.0));
         let mat_view = self.get_view_matrix();
         let mat_model = Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0))
-            * Mat4::from_rotation_y(time as f32 * 0.5);
+             * Mat4::from_scale(Vec3::splat(0.01));
         let mat_mvp = mat_perspective * mat_flip * mat_view * mat_model;
-        #[repr(C)]
-        #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-        struct Vertex(Vec3, u32);
-        const { assert!(size_of::<Vertex>() == 16) };
-        let vertex_data_vertices = arena.alloc_data(&[
-            Vertex(Vec3::new(-0.5, -0.5, 0.0), Self::pack_tex_vertex(0.0, 0.0, 0)),
-            Vertex(Vec3::new(0.5, -0.5, 0.0), Self::pack_tex_vertex(1.0, 0.0, 0)),
-            Vertex(Vec3::new(0.5, 0.5, 0.0), Self::pack_tex_vertex(1.0, 1.0, 0)),
-            Vertex(Vec3::new(-0.5, 0.5, 0.0), Self::pack_tex_vertex(0.0, 1.0, 0)),
 
-            Vertex(Vec3::new(0.0, -0.5, -0.5), Self::pack_tex_vertex(0.0, 0.0, 0)),
-            Vertex(Vec3::new(1.0, -0.5, -0.5), Self::pack_tex_vertex(1.0, 0.0, 0)),
-            Vertex(Vec3::new(1.0, 0.5, -0.5), Self::pack_tex_vertex(1.0, 1.0, 0)),
-            Vertex(Vec3::new(0.0, 0.5, -0.5), Self::pack_tex_vertex(0.0, 1.0, 0)),
-        ])?;
+        const { assert!(size_of::<Vertex>() == 16) };
+
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
         struct VertexData(Mat4, gpu::DevicePointer, u64);
         let vertex_data = arena.alloc_data(&[VertexData(
             mat_mvp,
-            vertex_data_vertices.device(),
+            self.model.device(),
             0,
         )])?;
 
@@ -240,9 +314,9 @@ impl<'a> Application<'a> {
              None,
              Some(&self.sampler_descriptors),
          );
-        command_buffer.draw_indexed(
+        command_buffer.draw_instanced(
             vertex_data.device(), pixel_data.device(),
-            indices.device(), index_data.len() as u32, gpu::IndexType::U32);
+            self.model.len() as u32, 1, 0, 0);
         command_buffer.end_render_pass();
 
         command_buffer.end_recording()?;

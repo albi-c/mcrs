@@ -1131,7 +1131,18 @@ impl<'a> CommandBuffer<'a> {
         unsafe { self.gpu.device.cmd_end_rendering_khr(self.buffer) };
     }
 
-    pub fn draw_instanced(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
+    fn push_graphics_pipeline_data(&mut self, vertex_data: DevicePointer, pixel_data: DevicePointer) {
+        let push_constants = [vertex_data, pixel_data];
+        unsafe {
+            self.gpu.device.cmd_push_constants(self.buffer, self.gpu.pipeline_layout.layout,
+                                               vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                                               0, bytemuck::cast_slice(&push_constants));
+        }
+    }
+
+    pub fn draw_instanced(&mut self, vertex_data: DevicePointer, pixel_data: DevicePointer,
+                          vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
+        self.push_graphics_pipeline_data(vertex_data, pixel_data);
         unsafe { self.gpu.device.cmd_draw(self.buffer, vertex_count, instance_count, first_vertex, first_instance) };
     }
 
@@ -1146,11 +1157,8 @@ impl<'a> CommandBuffer<'a> {
                                   first_instance: u32) {
         let (buffer, offset) = self.gpu.device_addr_to_buffer_offset(indices)
             .expect("invalid index buffer");
-        let push_constants = [vertex_data, pixel_data];
+        self.push_graphics_pipeline_data(vertex_data, pixel_data);
         unsafe {
-            self.gpu.device.cmd_push_constants(self.buffer, self.gpu.pipeline_layout.layout,
-                                               vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                                               0, bytemuck::cast_slice(&push_constants));
             self.gpu.device.cmd_bind_index_buffer(self.buffer, buffer, offset,
                                                   vk::IndexType::from_raw(index_type as i32));
             self.gpu.device.cmd_draw_indexed(self.buffer, index_count, instance_count, first_index,

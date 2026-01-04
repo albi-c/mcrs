@@ -26,3 +26,5 @@ pretty_env_logger = { workspace = true }
 glam = { workspace = true }
 bytemuck = { workspace = true }
 image = "0.25.9"
+tobj = "4.0.3"
+gltf = { version = "1.4.1", features = ["names"] }

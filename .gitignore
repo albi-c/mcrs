@@ -1,4 +1,5 @@
 /target
-shaders/*.spv
-/main_sponza
-/pkg_a_curtains
+/shaders/*.spv
+/models/main_sponza
+/models/pkg_a_curtains
+/models/*.cache
