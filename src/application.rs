@@ -1,9 +1,12 @@
+use std::collections::HashMap;
 use std::io::Cursor;
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec3, Vec3A};
+use glam::{Mat4, Vec2, Vec3, Vec3A};
 use image::{EncodableLayout, ImageReader};
-use gpu::{DevicePointer, MemoryAllocation, MemoryAllocator};
+use winit::event::ElementState;
+use winit::keyboard::{KeyCode, PhysicalKey};
+use gpu::{MemoryAllocation, MemoryAllocator};
 
 const FRAMES_IN_FLIGHT: u64 = 2;
 
@@ -15,11 +18,17 @@ pub struct Application<'a> {
     frame_semaphore: gpu::Semaphore<'a>,
     frame_arenas: Box<[gpu::Arena<'a>]>,
     next_frame: u64,
+    last_time: Option<f64>,
 
     tex: gpu::Texture<'a>,
     depth_buffer: gpu::Texture<'a>,
     tex_descriptors: gpu::DescriptorHeap<'a>,
     sampler_descriptors: gpu::DescriptorHeap<'a>,
+
+    keys: HashMap<PhysicalKey, bool>,
+    camera_pos: Vec3,
+    camera_front: Vec3,
+    camera_look: Vec2,
 }
 
 impl<'a> Application<'a> {
@@ -67,11 +76,17 @@ impl<'a> Application<'a> {
                 .map(|_| gpu.create_arena(1024 * 1024))
                 .collect::<Result<_>>()?,
             next_frame: 1,
+            last_time: None,
 
             tex,
             depth_buffer,
             tex_descriptors,
             sampler_descriptors,
+
+            keys: HashMap::new(),
+            camera_pos: Vec3::new(0.0, 0.0, 0.0),
+            camera_front: Vec3::new(0.0, 0.0, 1.0),
+            camera_look: Vec2::new(0.0, 0.0),
         })
     }
 
@@ -96,7 +111,52 @@ impl<'a> Application<'a> {
         ((tex as u32) << 16) | (((v * 8.0) as u32 & 0xff) << 8) | ((u * 8.0) as u32 & 0xff)
     }
 
+    fn get_key(&self, code: KeyCode) -> bool {
+        *self.keys.get(&PhysicalKey::Code(code)).unwrap_or(&false)
+    }
+
+    fn update(&mut self, dt: f32) {
+        let front = self.camera_front;
+        let up = -Vec3::Y;
+        let right = up.cross(front);
+
+        let mut vel = Vec3::new(0.0, 0.0, 0.0);
+        if self.get_key(KeyCode::KeyW) {
+            vel += front;
+        }
+        if self.get_key(KeyCode::KeyS) {
+            vel -= front;
+        }
+        if self.get_key(KeyCode::KeyD) {
+            vel += right;
+        }
+        if self.get_key(KeyCode::KeyA) {
+            vel -= right;
+        }
+        if self.get_key(KeyCode::Space) {
+            vel += up;
+        }
+        if self.get_key(KeyCode::ShiftLeft) {
+            vel -= up;
+        }
+
+        vel *= 2.5;
+        self.camera_pos += dt * vel;
+    }
+
+    fn get_view_matrix(&self) -> Mat4 {
+        Mat4::look_at_rh(
+            self.camera_pos,
+            self.camera_pos + self.camera_front,
+            Vec3::Y,
+        )
+    }
+
     pub fn render(&mut self, time: f64, ctx: &dyn gpu::SwapchainContext) -> Result<()> {
+        let last_time = self.last_time.replace(time).unwrap_or(time);
+        let dt = (time - last_time) as f32;
+        self.update(dt);
+
         if self.next_frame > FRAMES_IN_FLIGHT {
             self.frame_semaphore.wait(self.next_frame - FRAMES_IN_FLIGHT)?;
         }
@@ -116,11 +176,7 @@ impl<'a> Application<'a> {
             view_size.0 as f32 / view_size.1 as f32,
             0.001f32,
         );
-        let mat_view = Mat4::look_at_rh(
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.5, 0.0, -1.0).normalize(),
-            Vec3::Y,
-        );
+        let mat_view = self.get_view_matrix();
         let mat_model = Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0))
             * Mat4::from_rotation_y(time as f32 * 0.5);
         let mat_mvp = mat_perspective * mat_view * mat_model;
@@ -141,7 +197,7 @@ impl<'a> Application<'a> {
         ])?;
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-        struct VertexData(Mat4, DevicePointer, u64);
+        struct VertexData(Mat4, gpu::DevicePointer, u64);
         let vertex_data = arena.alloc_data(&[VertexData(
             mat_mvp,
             vertex_data_vertices.device(),
@@ -212,5 +268,26 @@ impl<'a> Application<'a> {
         self.depth_buffer = depth_buffer;
 
         Ok(())
+    }
+
+    pub fn key(&mut self, key: PhysicalKey, state: ElementState) {
+        self.keys.insert(key, state == ElementState::Pressed);
+    }
+
+    pub fn mouse_move(&mut self, delta: (f64, f64)) {
+        const SENSITIVITY: f32 = 0.5;
+        let motion = Vec2::new(delta.0 as f32, delta.1 as f32) * SENSITIVITY;
+        self.camera_look += motion;
+        self.camera_look.x = self.camera_look.x.rem_euclid(360.0);
+        self.camera_look.y = self.camera_look.y.clamp(-89.99, 89.99);
+
+        let yaw = self.camera_look.x.to_radians();
+        let pitch = self.camera_look.y.to_radians();
+
+        self.camera_front = Vec3::new(
+            yaw.cos() * pitch.cos(),
+            pitch.sin(),
+            yaw.sin() * pitch.cos(),
+        ).normalize();
     }
 }

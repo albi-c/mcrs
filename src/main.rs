@@ -7,7 +7,7 @@ use vulkanalia::{vk, Entry, Instance};
 use vulkanalia::loader::{LibloadingLoader, LIBRARY};
 use vulkanalia::vk::{EntryV1_0, ExtDebugUtilsExtensionInstanceCommands, HasBuilder, InstanceV1_0};
 use winit::dpi::LogicalSize;
-use winit::event::{Event, WindowEvent};
+use winit::event::{DeviceEvent, Event, WindowEvent};
 use winit::event_loop::EventLoop;
 use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
 use winit::window::{Window, WindowBuilder};
@@ -165,6 +165,15 @@ fn main() -> Result<()> {
                 WindowEvent::Resized(size) => {
                     app.resize((size.width, size.height)).unwrap();
                     application.resize(&app.get_swapchain_context()).unwrap();
+                },
+                WindowEvent::KeyboardInput { event, .. } => {
+                    application.key(event.physical_key, event.state);
+                },
+                _ => {},
+            },
+            Event::DeviceEvent { event, .. } => match event {
+                DeviceEvent::MouseMotion { delta } => {
+                    application.mouse_move(delta);
                 },
                 _ => {},
             },
