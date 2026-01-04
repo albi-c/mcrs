@@ -9,6 +9,7 @@ use std::alloc::Layout;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
+use std::marker::PhantomData;
 use std::ops::{Bound, Index, IndexMut};
 use anyhow::Result;
 use bitflags::bitflags;
@@ -619,22 +620,7 @@ impl<'a> IndexMut<usize> for DescriptorHeap<'a> {
 #[derive(Debug, Default)]
 pub struct TextureView<'a> {
     view: vk::ImageView,
-    aspect: vk::ImageAspectFlags,
-    texture: Option<Box<Texture<'a>>>,
-}
-
-impl<'a> Drop for TextureView<'a> {
-    fn drop(&mut self) {
-        if let Some(tex) = &self.texture {
-            unsafe { tex.gpu.device.destroy_image_view(self.view, None) };
-        }
-    }
-}
-
-impl<'a> TextureView<'a> {
-    fn destroy(self, gpu: &Gpu) {
-        unsafe { gpu.device.destroy_image_view(self.view, None) };
-    }
+    pd: PhantomData<&'a Texture<'a>>,
 }
 
 #[derive(Debug)]
@@ -646,6 +632,7 @@ pub struct Texture<'a> {
     aspect: vk::ImageAspectFlags,
     allocation: vma::Allocation,
     gpu: &'a Gpu,
+    view: Cell<vk::ImageView>,
 }
 
 impl<'a> Texture<'a> {
@@ -668,25 +655,30 @@ impl<'a> Texture<'a> {
         }
     }
 
-    fn create_view(&self) -> Result<vk::ImageView> {
-        let subresource_range = vk::ImageSubresourceRange::builder()
-            .aspect_mask(self.aspect)
-            .level_count(1)
-            .layer_count(1);
-        let view_info = vk::ImageViewCreateInfo::builder()
-            .image(self.image)
-            .view_type(Self::view_type(self.ty))
-            .format(vk::Format::from_raw(self.format as i32))
-            .subresource_range(subresource_range);
-        Ok(unsafe { self.gpu.device.create_image_view(&view_info, None)? })
+    fn get_view(&self) -> Result<vk::ImageView> {
+        let view = self.view.get();
+        if !view.is_null() {
+            Ok(view)
+        } else {
+            let subresource_range = vk::ImageSubresourceRange::builder()
+                .aspect_mask(self.aspect)
+                .level_count(1)
+                .layer_count(1);
+            let view_info = vk::ImageViewCreateInfo::builder()
+                .image(self.image)
+                .view_type(Self::view_type(self.ty))
+                .format(vk::Format::from_raw(self.format as i32))
+                .subresource_range(subresource_range);
+            let view = unsafe { self.gpu.device.create_image_view(&view_info, None)? };
+            self.view.set(view);
+            Ok(view)
+        }
     }
 
-    pub fn view(self: Box<Self>) -> Result<TextureView<'a>> {
-        let view = self.create_view()?;
+    pub fn view(&self) -> Result<TextureView<'_>> {
         Ok(TextureView {
-            view,
-            aspect: self.aspect,
-            texture: Some(self),
+            view: self.get_view()?,
+            pd: PhantomData,
         })
     }
 
@@ -698,11 +690,7 @@ impl<'a> Texture<'a> {
         assert_eq!(descriptor.len(), self.view_descriptor_size(),
                    "incorrect buffer size for texture descriptor");
 
-        let view = TextureView {
-            view: self.create_view()?,
-            aspect: self.aspect,
-            texture: None,
-        };
+        let view = self.view()?;
 
         let image_info = vk::DescriptorImageInfo::builder()
             .sampler(vk::Sampler::null())
@@ -716,8 +704,6 @@ impl<'a> Texture<'a> {
             });
         unsafe { self.gpu.device.get_descriptor_ext(&info, descriptor) };
 
-        view.destroy(self.gpu);
-
         Ok(())
     }
     pub fn rw_view_descriptor(&self) -> Result<()> {
@@ -727,7 +713,13 @@ impl<'a> Texture<'a> {
 
 impl<'a> Drop for Texture<'a> {
     fn drop(&mut self) {
-        unsafe { self.gpu.allocator.as_ref().unwrap().destroy_image(self.image, self.allocation) };
+        unsafe {
+            let view = self.view.get();
+            if !view.is_null() {
+                self.gpu.device.destroy_image_view(view, None);
+            }
+            self.gpu.allocator.as_ref().unwrap().destroy_image(self.image, self.allocation);
+        }
     }
 }
 
@@ -1496,6 +1488,7 @@ impl Gpu {
             image,
             allocation,
             gpu: self,
+            view: Cell::new(vk::ImageView::null()),
         })
     }
 
@@ -1611,8 +1604,7 @@ impl Gpu {
         Ok(Target {
             view: TextureView {
                 view: swapchain.image_views[next_image_index],
-                aspect: vk::ImageAspectFlags::COLOR,
-                texture: None,
+                pd: PhantomData,
             },
             load_op: Load::Clear,
             store_op: Store::Store,

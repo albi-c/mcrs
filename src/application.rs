@@ -17,7 +17,7 @@ pub struct Application<'a> {
     next_frame: u64,
 
     tex: gpu::Texture<'a>,
-    depth_buffer_view: gpu::TextureView<'a>,
+    depth_buffer: gpu::Texture<'a>,
     tex_descriptors: gpu::DescriptorHeap<'a>,
     sampler_descriptors: gpu::DescriptorHeap<'a>,
 }
@@ -43,16 +43,7 @@ impl<'a> Application<'a> {
         }, &mut command_buffer)?;
         command_buffer.copy_to_texture(img_alloc.device(), &tex);
 
-        let dims = ctx.get_window_size();
-        let depth_buffer = Box::new(gpu.create_texture(gpu::TextureDesc {
-            ty: gpu::TextureType::Tex2D,
-            dimensions: (dims.0, dims.1, 1),
-            format: gpu::Format::Depth32Float,
-            usage: gpu::TextureUsageFlags::DepthStencilAttachment,
-            layout: gpu::TextureLayout::DepthStencilAttachmentOptimal,
-            ..Default::default()
-        }, &mut command_buffer)?);
-        let depth_buffer_view = depth_buffer.view()?;
+        let depth_buffer = Self::create_depth_buffer(gpu, ctx, &mut command_buffer)?;
 
         command_buffer.end_recording()?;
 
@@ -78,10 +69,23 @@ impl<'a> Application<'a> {
             next_frame: 1,
 
             tex,
-            depth_buffer_view,
+            depth_buffer,
             tex_descriptors,
             sampler_descriptors,
         })
+    }
+
+    fn create_depth_buffer<'b>(gpu: &'b gpu::Gpu, ctx: &dyn gpu::SwapchainContext,
+                               cmd_buf: &mut gpu::CommandBuffer<'_>) -> Result<gpu::Texture<'b>> {
+        let dims = ctx.get_window_size();
+        gpu.create_texture(gpu::TextureDesc {
+            ty: gpu::TextureType::Tex2D,
+            dimensions: (dims.0, dims.1, 1),
+            format: gpu::Format::Depth32Float,
+            usage: gpu::TextureUsageFlags::DepthStencilAttachment,
+            layout: gpu::TextureLayout::DepthStencilAttachmentOptimal,
+            ..Default::default()
+        }, cmd_buf)
     }
 
     fn get_frame_arena(&self) -> &gpu::Arena<'_> {
@@ -149,13 +153,14 @@ impl<'a> Application<'a> {
         let mut swapchain_target = self.gpu.next_swapchain_image(ctx, &mut command_buffer)?;
         swapchain_target.clear_value = gpu::ClearValue::Color([0.08, 0.0, 0.0, 1.0]);
         let depth_target = gpu::Target {
-            view: self.depth_buffer_view,
+            view: self.depth_buffer.view()?,
             load_op: gpu::Load::Clear,
             store_op: gpu::Store::Store,
-            clear_value: gpu::ClearValue::DepthStencil(0.0, 0),
+            clear_value: gpu::ClearValue::DepthStencil(1.0, 0),
         };
         let render_pass_desc = gpu::RenderPassDesc {
             color_targets: &[swapchain_target],
+            depth_target: Some(&depth_target),
             ..Default::default()
         };
         command_buffer.begin_render_pass(&render_pass_desc);
@@ -180,7 +185,19 @@ impl<'a> Application<'a> {
         Ok(())
     }
 
-    pub fn resize(&mut self, ctx: &dyn gpu::SwapchainContext) {
-        todo!()
+    pub fn resize(&mut self, ctx: &dyn gpu::SwapchainContext) -> Result<()> {
+        let mut command_buffer = self.queue.create_buffer()?;
+
+        command_buffer.begin_recording()?;
+
+        let depth_buffer = Self::create_depth_buffer(self.gpu, ctx, &mut command_buffer)?;
+
+        command_buffer.end_recording()?;
+
+        self.queue.submit_no_signal(command_buffer)?.wait();
+
+        self.depth_buffer = depth_buffer;
+
+        Ok(())
     }
 }

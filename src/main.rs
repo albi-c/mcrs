@@ -164,6 +164,7 @@ fn main() -> Result<()> {
                 WindowEvent::CloseRequested => target.exit(),
                 WindowEvent::Resized(size) => {
                     app.resize((size.width, size.height)).unwrap();
+                    application.resize(&app.get_swapchain_context()).unwrap();
                 },
                 _ => {},
             },
