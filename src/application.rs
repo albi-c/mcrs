@@ -133,11 +133,13 @@ impl<'a> Application<'a> {
 
         command_buffer.begin_recording()?;
 
-        let image_index = self.gpu.next_swapchain_image(ctx)?;
+        let mut swapchain_target = self.gpu.next_swapchain_image(ctx, &mut command_buffer)?;
+        swapchain_target.clear_value = gpu::ClearValue::Color([0.08, 0.0, 0.0, 1.0]);
         let render_pass_desc = gpu::RenderPassDesc {
+            color_targets: &[swapchain_target],
             ..Default::default()
         };
-        command_buffer.begin_render_pass(&render_pass_desc, image_index);
+        command_buffer.begin_render_pass(&render_pass_desc);
         command_buffer.bind_shaders([&self.vertex_shader, &self.pixel_shader]);
          command_buffer.set_texture_heap(
              Some(&self.tex_descriptors),
@@ -147,7 +149,7 @@ impl<'a> Application<'a> {
         command_buffer.draw_indexed(
             vertex_data.device(), pixel_data.device(),
             indices.device(), 6, gpu::IndexType::U32);
-        command_buffer.end_render_pass(image_index);
+        command_buffer.end_render_pass();
 
         command_buffer.end_recording()?;
 

@@ -8,6 +8,7 @@ mod arena;
 use std::alloc::Layout;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
 use std::ops::{Bound, Index, IndexMut};
 use anyhow::Result;
 use bitflags::bitflags;
@@ -82,55 +83,60 @@ pub enum StencilOp {
     DecrementWrap,
 }
 
-// #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-// pub enum Load {
-//     Load,
-//     Clear,
-//     DontCare,
-// }
-//
-// #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-// pub enum Store {
-//     Store,
-//     DontCare,
-// }
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(i32)]
+pub enum Load {
+    Load = vk::AttachmentLoadOp::LOAD.as_raw(),
+    Clear = vk::AttachmentLoadOp::CLEAR.as_raw(),
+    DontCare = vk::AttachmentLoadOp::DONT_CARE.as_raw(),
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(i32)]
+pub enum Store {
+    Store = vk::AttachmentStoreOp::STORE.as_raw(),
+    DontCare = vk::AttachmentStoreOp::DONT_CARE.as_raw(),
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(i32)]
 pub enum Blend {
-    Add,
-    Subtract,
-    RevSubtract,
-    Min,
-    Max,
+    Add = vk::BlendOp::ADD.as_raw(),
+    Subtract = vk::BlendOp::SUBTRACT.as_raw(),
+    RevSubtract = vk::BlendOp::REVERSE_SUBTRACT.as_raw(),
+    Min = vk::BlendOp::MIN.as_raw(),
+    Max = vk::BlendOp::MAX.as_raw(),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(i32)]
 pub enum Factor {
-    Zero,
-    One,
-    SrcColor,
-    OneMinusSrcColor,
-    DstColor,
-    OneMinusDstColor,
-    SrcAlpha,
-    OneMinusSrcAlpha,
-    DstAlpha,
-    OneMinusDstAlpha,
-    ConstantColor,
-    OneMinusConstantColor,
-    ConstantAlpha,
-    OneMinusConstantAlpha,
-    SrcAlphaSaturate,
+    Zero = vk::BlendFactor::ZERO.as_raw(),
+    One = vk::BlendFactor::ONE.as_raw(),
+    SrcColor = vk::BlendFactor::SRC_COLOR.as_raw(),
+    OneMinusSrcColor = vk::BlendFactor::ONE_MINUS_SRC_COLOR.as_raw(),
+    DstColor = vk::BlendFactor::DST_COLOR.as_raw(),
+    OneMinusDstColor = vk::BlendFactor::ONE_MINUS_DST_COLOR.as_raw(),
+    SrcAlpha = vk::BlendFactor::SRC_ALPHA.as_raw(),
+    OneMinusSrcAlpha = vk::BlendFactor::ONE_MINUS_SRC_ALPHA.as_raw(),
+    DstAlpha = vk::BlendFactor::DST_ALPHA.as_raw(),
+    OneMinusDstAlpha = vk::BlendFactor::ONE_MINUS_DST_ALPHA.as_raw(),
+    ConstantColor = vk::BlendFactor::CONSTANT_COLOR.as_raw(),
+    OneMinusConstantColor = vk::BlendFactor::ONE_MINUS_CONSTANT_COLOR.as_raw(),
+    ConstantAlpha = vk::BlendFactor::CONSTANT_ALPHA.as_raw(),
+    OneMinusConstantAlpha = vk::BlendFactor::ONE_MINUS_CONSTANT_ALPHA.as_raw(),
+    SrcAlphaSaturate = vk::BlendFactor::SRC_ALPHA_SATURATE.as_raw(),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(i32)]
 pub enum Topology {
-    PointList,
-    LineList,
-    LineStrip,
-    TriangleList,
-    TriangleStrip,
-    TriangleFan,
+    PointList = vk::PrimitiveTopology::POINT_LIST.as_raw(),
+    LineList = vk::PrimitiveTopology::LINE_LIST.as_raw(),
+    LineStrip = vk::PrimitiveTopology::LINE_STRIP.as_raw(),
+    TriangleList = vk::PrimitiveTopology::TRIANGLE_LIST.as_raw(),
+    TriangleStrip = vk::PrimitiveTopology::TRIANGLE_STRIP.as_raw(),
+    TriangleFan = vk::PrimitiveTopology::TRIANGLE_FAN.as_raw(),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -164,12 +170,28 @@ bitflags! {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum Stage {
-    Transfer,
-    Compute,
-    RasterColorOut,
-    PixelShader,
-    VertexShader,
+pub struct Stage(u32);
+bitflags! {
+    impl Stage : u32 {
+        const Top = vk::PipelineStageFlags::TOP_OF_PIPE.bits();
+        const Transfer = vk::PipelineStageFlags::TRANSFER.bits();
+        const Compute = vk::PipelineStageFlags::COMPUTE_SHADER.bits();
+        const RasterColorOut = vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT.bits();
+        const VertexShader = vk::PipelineStageFlags::VERTEX_SHADER.bits();
+        const PixelShader = vk::PipelineStageFlags::FRAGMENT_SHADER.bits();
+        const Bottom = vk::PipelineStageFlags::BOTTOM_OF_PIPE.bits();
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct Access(u32);
+bitflags! {
+    impl Access : u32 {
+        const ColorTargetRead = vk::AccessFlags::COLOR_ATTACHMENT_READ.bits();
+        const ColorTargetWrite = vk::AccessFlags::COLOR_ATTACHMENT_WRITE.bits();
+        const DepthStencilTargetRead = vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ.bits();
+        const DepthStencilTargetWrite = vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE.bits();
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -245,6 +267,19 @@ pub enum TextureWrap {
     ClampToEdge = vk::SamplerAddressMode::CLAMP_TO_EDGE.as_raw(),
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(i32)]
+pub enum TextureLayout {
+    Undefined = vk::ImageLayout::UNDEFINED.as_raw(),
+    General = vk::ImageLayout::GENERAL.as_raw(),
+    ColorAttachmentOptimal = vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL.as_raw(),
+    DepthStencilAttachmentOptimal = vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL.as_raw(),
+    DepthStencilReadOnlyOptimal = vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL.as_raw(),
+    ShaderReadOnlyOptimal = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL.as_raw(),
+    TransferSrcOptimal = vk::ImageLayout::TRANSFER_SRC_OPTIMAL.as_raw(),
+    TransferDstOptimal = vk::ImageLayout::TRANSFER_DST_OPTIMAL.as_raw(),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
 pub struct Stencil {
     #[default(Op::Always)]
@@ -305,32 +340,66 @@ pub struct ColorTarget {
     pub write_mask: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
-pub struct RasterDesc<'a> {
-    #[default(Topology::TriangleList)]
-    pub topology: Topology,
-    #[default = false]
-    pub primitive_restart: bool,
-    #[default(Cull::None)]
-    pub cull: Cull,
-    // TODO: DepthStencilDesc
-    // #[default = false]
-    // pub alpha_to_coverage: bool,
-    // #[default = false]
-    // pub dual_source_blending: bool,
-    #[default = 1]
-    pub sample_count: u8,
-    // #[default(Format::None)]
-    // pub depth_format: Format,
-    // #[default(Format::None)]
-    // pub stencil_format: Format,
-    // #[default(&[])]
-    // pub color_targets: &'a [ColorTarget],
-    pub blend_state: Option<&'a BlendDesc>,
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClearValue {
+    Color([f32; 4]),
+    ColorI([i32; 4]),
+    ColorU([u32; 4]),
+    DepthStencil(f32, u32),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
-pub struct RenderPassDesc {
+impl Eq for ClearValue {}
+impl Hash for ClearValue {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Color(arr) => bytemuck::cast_slice::<_, u32>(arr).hash(state),
+            Self::ColorI(arr) => arr.hash(state),
+            Self::ColorU(arr) => arr.hash(state),
+            Self::DepthStencil(d, s) => {
+                bytemuck::cast::<_, u32>(*d).hash(state);
+                s.hash(state);
+            }
+        }
+    }
+}
+impl Default for ClearValue {
+    fn default() -> Self {
+        Self::Color([0.0, 0.0, 0.0, 1.0])
+    }
+}
+
+impl ClearValue {
+    fn to_vulkan(&self) -> vk::ClearValue {
+        match self {
+            Self::Color(arr) => vk::ClearValue { color: vk::ClearColorValue {
+                float32: *arr,
+            } },
+            Self::ColorI(arr) => vk::ClearValue { color: vk::ClearColorValue {
+                int32: *arr,
+            } },
+            Self::ColorU(arr) => vk::ClearValue { color: vk::ClearColorValue {
+                uint32: *arr,
+            } },
+            Self::DepthStencil(d, s) => vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue {
+                depth: *d,
+                stencil: *s,
+            } },
+        }
+    }
+}
+
+#[derive(Debug, SmartDefault)]
+pub struct Target<'a> {
+    pub view: TextureView<'a>,
+    #[default(Load::Load)]
+    pub load_op: Load,
+    #[default(Store::Store)]
+    pub store_op: Store,
+    pub clear_value: ClearValue,
+}
+
+#[derive(Debug, Clone, SmartDefault)]
+pub struct RenderPassDesc<'a> {
     #[default((0, 0))]
     pub render_area_offset: (i32, i32),
     #[default((0, 0))]
@@ -339,7 +408,22 @@ pub struct RenderPassDesc {
     pub layer_count: u32,
     #[default = 0]
     pub view_mask: u32,
-    // TODO: attachments
+    #[default(Topology::TriangleList)]
+    pub topology: Topology,
+    #[default = false]
+    pub primitive_restart: bool,
+    #[default(Cull::None)]
+    pub cull: Cull,
+    #[default = false]
+    pub alpha_to_coverage: bool,
+    #[default = false]
+    pub dual_source_blending: bool,
+    #[default = 1]
+    pub sample_count: u8,
+    pub blend_state: Option<&'a BlendDesc>,
+    pub color_targets: &'a [Target<'a>],
+    pub depth_target: Option<&'a Target<'a>>,
+    pub stencil_target: Option<&'a Target<'a>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
@@ -539,6 +623,20 @@ impl<'a> IndexMut<usize> for DescriptorHeap<'a> {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct TextureView<'a> {
+    view: vk::ImageView,
+    texture: Option<&'a Texture<'a>>,
+}
+
+impl<'a> Drop for TextureView<'a> {
+    fn drop(&mut self) {
+        if let Some(tex) = self.texture {
+            unsafe { tex.gpu.device.destroy_image_view(self.view, None) };
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Texture<'a> {
     dimensions: (u32, u32, u32),
@@ -562,14 +660,7 @@ impl<'a> Texture<'a> {
         }
     }
 
-    pub fn view_descriptor_size(&self) -> usize {
-        self.gpu.descriptor_sizes.sampled_texture
-    }
-
-    pub fn view_descriptor(&self, descriptor: &mut [u8]) -> Result<()> {
-        assert_eq!(descriptor.len(), self.view_descriptor_size(),
-                   "incorrect buffer size for texture descriptor");
-
+    pub fn view(&self) -> Result<TextureView<'_>> {
         let subresource_range = vk::ImageSubresourceRange::builder()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .level_count(1)
@@ -581,9 +672,25 @@ impl<'a> Texture<'a> {
             .subresource_range(subresource_range);
         let view = unsafe { self.gpu.device.create_image_view(&view_info, None)? };
 
+        Ok(TextureView {
+            view,
+            texture: Some(self),
+        })
+    }
+
+    pub fn view_descriptor_size(&self) -> usize {
+        self.gpu.descriptor_sizes.sampled_texture
+    }
+
+    pub fn view_descriptor(&self, descriptor: &mut [u8]) -> Result<()> {
+        assert_eq!(descriptor.len(), self.view_descriptor_size(),
+                   "incorrect buffer size for texture descriptor");
+
+        let view = self.view()?;
+
         let image_info = vk::DescriptorImageInfo::builder()
             .sampler(vk::Sampler::null())
-            .image_view(view)
+            .image_view(view.view)
             .image_layout(vk::ImageLayout::GENERAL)
             .build();
         let info = vk::DescriptorGetInfoEXT::builder()
@@ -592,8 +699,6 @@ impl<'a> Texture<'a> {
                 sampled_image: &raw const image_info,
             });
         unsafe { self.gpu.device.get_descriptor_ext(&info, descriptor) };
-
-        unsafe { self.gpu.device.destroy_image_view(view, None) };
 
         Ok(())
     }
@@ -839,9 +944,9 @@ impl<'a> CommandBuffer<'a> {
         todo!()
     }
 
-    fn image_barrier(&mut self, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout, image: vk::Image,
-                     src_stage: vk::PipelineStageFlags, dst_stage: vk::PipelineStageFlags,
-                     before_render: bool) {
+    fn image_barrier_raw(&mut self, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout, image: vk::Image,
+                         src_stage: vk::PipelineStageFlags, dst_stage: vk::PipelineStageFlags,
+                         src_access: vk::AccessFlags, dst_access: vk::AccessFlags) {
         let subresource_range = vk::ImageSubresourceRange::builder()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .base_mip_level(0)
@@ -853,12 +958,9 @@ impl<'a> CommandBuffer<'a> {
             .old_layout(old_layout)
             .new_layout(new_layout)
             .image(image)
-            .subresource_range(subresource_range);
-        let barrier = if before_render {
-            barrier.dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_READ)
-        } else {
-            barrier.src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-        };
+            .subresource_range(subresource_range)
+            .src_access_mask(src_access)
+            .dst_access_mask(dst_access);
 
         let barriers = [barrier];
         unsafe {
@@ -874,48 +976,86 @@ impl<'a> CommandBuffer<'a> {
         }
     }
 
-    pub fn begin_render_pass(&mut self, desc: &RenderPassDesc, framebuffer: usize) {
+    fn image_barrier(&mut self, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout, image: vk::Image,
+                     src_stage: vk::PipelineStageFlags, dst_stage: vk::PipelineStageFlags,
+                     before_render: bool) {
+        self.image_barrier_raw(
+            old_layout, new_layout, image,
+            src_stage, dst_stage,
+            if before_render {
+                vk::AccessFlags::empty()
+            } else {
+                vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+            },
+            if before_render {
+                vk::AccessFlags::COLOR_ATTACHMENT_READ
+            } else {
+                vk::AccessFlags::empty()
+            }
+        );
+    }
+
+    pub fn texture_barrier(&mut self, texture: &Texture<'_>,
+                           old_layout: TextureLayout, new_layout: TextureLayout,
+                           src_stage: Stage, dst_stage: Stage,
+                           src_access: Access, dst_access: Access) {
+        self.image_barrier_raw(
+            vk::ImageLayout::from_raw(old_layout as i32),
+            vk::ImageLayout::from_raw(new_layout as i32),
+            texture.image,
+            vk::PipelineStageFlags::from_bits(src_stage.bits()).unwrap(),
+            vk::PipelineStageFlags::from_bits(dst_stage.bits()).unwrap(),
+            vk::AccessFlags::from_bits(src_access.bits()).unwrap(),
+            vk::AccessFlags::from_bits(dst_access.bits()).unwrap(),
+        )
+    }
+
+    fn create_attachment(attachment: &Target<'_>) -> vk::RenderingAttachmentInfoBuilder<'static> {
+        vk::RenderingAttachmentInfo::builder()
+            .image_view(attachment.view.view)
+            .image_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)  // TODO: move to struct
+            .load_op(vk::AttachmentLoadOp::from_raw(attachment.load_op as i32))
+            .store_op(vk::AttachmentStoreOp::from_raw(attachment.store_op as i32))
+            .clear_value(attachment.clear_value.to_vulkan())
+    }
+
+    pub fn begin_render_pass(&mut self, desc: &RenderPassDesc<'_>) {
         let render_area_size = if desc.render_area_size == (0, 0) {
             self.gpu.swapchain.borrow().extent
         } else {
             vk::Extent2D { width: desc.render_area_size.0, height: desc.render_area_size.1 }
         };
 
-        self.image_barrier(
-            vk::ImageLayout::UNDEFINED, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            self.gpu.swapchain.borrow().images[framebuffer],
-            vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            true);
-
         let render_area = vk::Rect2D::builder()
             .offset(vk::Offset2D { x: desc.render_area_offset.0, y: desc.render_area_offset.1 })
             .extent(render_area_size);
 
-        let color_clear_value = vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [0.08, 0.0, 0.0, 1.0],
-            },
-        };
-
-        let color_attachment = vk::RenderingAttachmentInfoKHR::builder()
-            .image_view(self.gpu.swapchain.borrow().image_views[framebuffer])
-            .image_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .clear_value(color_clear_value);
-
-        let color_attachments = [color_attachment];
-        let info = vk::RenderingInfoKHR::builder()
+        let color_attachments = desc.color_targets.iter()
+            .map(Self::create_attachment)
+            .collect::<Vec<_>>();
+        let depth_attachment;
+        let stencil_attachment;
+        let mut info = vk::RenderingInfoKHR::builder()
             .render_area(render_area)
             .layer_count(desc.layer_count.max(1))
             .view_mask(desc.view_mask)
             .color_attachments(&color_attachments);
+        if let Some(a) = desc.depth_target {
+            depth_attachment = Self::create_attachment(a);
+            info = info.depth_attachment(&depth_attachment);
+        }
+        if let Some(a) = desc.stencil_target {
+            stencil_attachment = Self::create_attachment(a);
+            info = info.stencil_attachment(&stencil_attachment);
+        }
 
         let dev = &self.gpu.device;
 
         unsafe { dev.cmd_begin_rendering_khr(self.buffer, &info) };
 
         unsafe {
+            // TODO: use values from desc
+
             dev.cmd_set_stencil_test_enable_ext(self.buffer, false);
             dev.cmd_set_color_blend_enable_ext(self.buffer, 0, &[vk::FALSE]);
             dev.cmd_set_color_write_mask_ext(self.buffer, 0, &[vk::ColorComponentFlags::all()]);
@@ -953,14 +1093,8 @@ impl<'a> CommandBuffer<'a> {
             dev.cmd_set_front_face_ext(self.buffer, vk::FrontFace::CLOCKWISE);
         }
     }
-    pub fn end_render_pass(&mut self, framebuffer: usize) {
+    pub fn end_render_pass(&mut self) {
         unsafe { self.gpu.device.cmd_end_rendering_khr(self.buffer) };
-
-        self.image_barrier(
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR,
-            self.gpu.swapchain.borrow().images[framebuffer],
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-            false);
     }
 
     pub fn draw_instanced(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
@@ -1412,7 +1546,8 @@ impl Gpu {
         })
     }
 
-    pub fn next_swapchain_image(&self, ctx: &dyn SwapchainContext) -> Result<usize> {
+    pub fn next_swapchain_image(&self, ctx: &dyn SwapchainContext,
+                                cmd_buf: &mut CommandBuffer<'_>) -> Result<Target<'_>> {
         let fence_info = vk::FenceCreateInfo::builder();
         let fence = unsafe { self.device.create_fence(&fence_info, None)? };
 
@@ -1430,7 +1565,7 @@ impl Gpu {
             Ok((_, vk::SuccessCode::SUBOPTIMAL_KHR)) | Err(vk::ErrorCode::OUT_OF_DATE_KHR) => {
                 unsafe { self.device.destroy_fence(fence, None) };
                 self.recreate_swapchain(ctx)?;
-                return self.next_swapchain_image(ctx);
+                return self.next_swapchain_image(ctx, cmd_buf);
             },
             Ok((index, _)) => index as usize,
             Err(e) => Err(e)?,
@@ -1443,9 +1578,22 @@ impl Gpu {
             self.device.destroy_fence(fence, None);
         }
 
-        // TODO: move image layout transition here
+        cmd_buf.image_barrier(
+            vk::ImageLayout::UNDEFINED, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            swapchain.images[next_image_index],
+            vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            true
+        );
 
-        Ok(next_image_index)
+        Ok(Target {
+            view: TextureView {
+                view: swapchain.image_views[next_image_index],
+                texture: None,
+            },
+            load_op: Load::Clear,
+            store_op: Store::Store,
+            clear_value: ClearValue::Color([0.0, 0.0, 0.0, 1.0]),
+        })
     }
 
     pub fn swapchain_present(&self, wait_semaphore: &Semaphore<'_>, wait_value: u64) -> Result<()> {
@@ -1458,7 +1606,12 @@ impl Gpu {
         let mut cmd_buf = graphics_queue.create_buffer()?;
         cmd_buf.begin_recording()?;
 
-        // TODO: move image layout transition here
+        cmd_buf.image_barrier(
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR,
+            swapchain.images[image_index],
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            false
+        );
 
         cmd_buf.end_recording()?;
 
