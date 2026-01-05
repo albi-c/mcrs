@@ -3,23 +3,42 @@
 #include "common.glsl"
 
 layout(location = 0) out vec2 outUv;
-layout(location = 1) flat out uint outTex;
+layout(location = 1) out vec3 outNormal;
+layout(location = 2) flat out uvec4 outMat;
 
 struct Vertex {
     float x;
     float y;
     float z;
-    uint tex;
+    uint mat;
+    vec2 uv;
+    vec2 nxy;
+};
+
+struct Material {
+    // (diffuse << 16) | disp
+    // ambient == diffuse
+    // alpha is in diffuse
+    uint texDiffuseDisp;
+
+    // (? << 24) | (b << 16) | (g << 8) | r
+    uint ambient;
+    uint diffuseAndDissolve;
+    uint specularAndExp;
 };
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer VertDataVertices {
     Vertex data[];
 };
 
+layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer VertDataMaterials {
+    Material data[];
+};
+
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer VertData {
     mat4 mvp;
     VertDataVertices vertices;
-    uint64_t _padding;
+    VertDataMaterials materials;
 };
 
 layout(std430, push_constant) uniform Data {
@@ -29,11 +48,19 @@ layout(std430, push_constant) uniform Data {
 
 void main() {
     VertData d = data.vert;
+
     Vertex vertex = d.vertices.data[gl_VertexIndex];
     gl_Position = d.mvp * vec4(vertex.x, vertex.y, vertex.z, 1.0);
-    uint tex = vertex.tex;
-    float u = float(tex & ((1 << 10) - 1));
-    float v = float((tex >> 10) & ((1 << 10) - 1));
-    outUv = round(vec2(u, v)) / 512.0;
-    outTex = tex >> 20;
+    outUv = vec2(vertex.uv.x, 1.0 - vertex.uv.y);
+    vec2 n = vertex.nxy;
+    outNormal = vec3(n, sqrt(max(1.0 - n.x*n.x - n.y*n.y, 0.0)));
+
+    Material material = d.materials.data[vertex.mat];
+    outMat = uvec4(material.texDiffuseDisp, material.ambient, material.diffuseAndDissolve, material.specularAndExp);
+
+//    uint tex = vertex.tex;
+//    float u = float(tex & ((1 << 10) - 1));
+//    float v = float((tex >> 10) & ((1 << 10) - 1));
+//    outUv = round(vec2(u, v)) / 512.0;
+//    outTex = tex >> 20;
 }

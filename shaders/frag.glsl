@@ -3,7 +3,8 @@
 #include "common.glsl"
 
 layout(location = 0) in vec2 inUv;
-layout(location = 1) flat in uint inTex;
+layout(location = 1) in vec3 inNormal;
+layout(location = 2) flat in uvec4 inMat;
 
 layout(location = 0) out vec4 outColor;
 
@@ -20,6 +21,37 @@ layout(std430, push_constant) uniform Data {
     FragData frag;
 } data;
 
+vec4 readPacked(uint packed) {
+    vec4 color = vec4(
+        float(packed & 0xff),
+        float((packed >> 8) & 0xff),
+        float((packed >> 16) & 0xff),
+        float(packed >> 24)
+    );
+    return color / 255.0;
+}
+
 void main() {
-    outColor = vec4(texture(sampler2D(textures[nonuniformEXT(inTex)], samplers[0]), inUv).rgb * data.frag.tint.rgb, 1.0);
+    // ambient == diffuse
+    // alpha is in diffuse
+    uint texDiffuse = inMat.x >> 16;
+    uint texDisp = inMat.x & 0xffff;
+
+    vec4 sampleDiffuse = texture(sampler2D(textures[nonuniformEXT(texDiffuse)], samplers[0]), inUv);
+    if (sampleDiffuse.a < 0.001) {
+        discard;
+    }
+    vec4 sampleDisp = texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv);
+
+    vec3 ambient = readPacked(inMat.y).rgb;
+
+    vec4 diffuseAndDissolve = readPacked(inMat.z);
+    vec3 diffuse = diffuseAndDissolve.rgb;
+    float dissolve = diffuseAndDissolve.a;
+
+    vec4 specularAndExp = readPacked(inMat.w);
+    vec3 specular = specularAndExp.rgb;
+    float specularExp = specularAndExp.a;
+
+    outColor = vec4(sampleDiffuse.rgb, 1.0);
 }

@@ -1424,32 +1424,10 @@ impl Gpu {
         self.alloc_descriptor_heap(PipelineLayout::MAX_SAMPLERS, self.descriptor_sizes.sampler)
     }
 
-    pub fn allocator(&self) -> impl MemoryAllocator {
-        struct GpuMemoryAllocator<'a>(&'a Gpu);
-        impl<'a> MemoryAllocator for GpuMemoryAllocator<'a> {
-            type Allocation<T: Pod> = Allocation<'a, T>;
-
-            fn alloc<T: Pod>(&self, n: usize) -> Result<Self::Allocation<T>> {
-                self.0.alloc(n)
-            }
-            fn alloc_aligned<T: Pod>(&self, n: usize, align: usize) -> Result<Self::Allocation<T>> {
-                self.0.alloc_aligned(n, align)
-            }
-        }
+    pub fn allocator(&self) -> GpuMemoryAllocator<'_> {
         GpuMemoryAllocator(self)
     }
-    pub fn allocator_mem(&self, memory: Memory) -> impl MemoryAllocator {
-        struct GpuMemoryAllocatorMem<'a>(&'a Gpu, Memory);
-        impl<'a> MemoryAllocator for GpuMemoryAllocatorMem<'a> {
-            type Allocation<T: Pod> = Allocation<'a, T>;
-
-            fn alloc<T: Pod>(&self, n: usize) -> Result<Self::Allocation<T>> {
-                self.0.alloc_mem(n, self.1)
-            }
-            fn alloc_aligned<T: Pod>(&self, n: usize, align: usize) -> Result<Self::Allocation<T>> {
-                self.0.alloc_mem_aligned(n, align, self.1)
-            }
-        }
+    pub fn allocator_mem(&self, memory: Memory) -> GpuMemoryAllocatorMem<'_> {
         GpuMemoryAllocatorMem(self, memory)
     }
 
@@ -1681,5 +1659,29 @@ impl Gpu {
         }
 
         Ok(())
+    }
+}
+
+pub struct GpuMemoryAllocator<'a>(&'a Gpu);
+impl<'a> MemoryAllocator for GpuMemoryAllocator<'a> {
+    type Allocation<T: Pod> = Allocation<'a, T>;
+
+    fn alloc<T: Pod>(&self, n: usize) -> Result<Self::Allocation<T>> {
+        self.0.alloc(n)
+    }
+    fn alloc_aligned<T: Pod>(&self, n: usize, align: usize) -> Result<Self::Allocation<T>> {
+        self.0.alloc_aligned(n, align)
+    }
+}
+
+pub struct GpuMemoryAllocatorMem<'a>(&'a Gpu, Memory);
+impl<'a> MemoryAllocator for GpuMemoryAllocatorMem<'a> {
+    type Allocation<T: Pod> = Allocation<'a, T>;
+
+    fn alloc<T: Pod>(&self, n: usize) -> Result<Self::Allocation<T>> {
+        self.0.alloc_mem(n, self.1)
+    }
+    fn alloc_aligned<T: Pod>(&self, n: usize, align: usize) -> Result<Self::Allocation<T>> {
+        self.0.alloc_mem_aligned(n, align, self.1)
     }
 }

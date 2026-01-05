@@ -1,20 +1,20 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs;
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec2, Vec3, Vec3A};
+use glam::{Mat4, Vec2, Vec3, Vec3A, Vec3Swizzles, Vec4};
 use image::{EncodableLayout, ImageReader};
 use winit::event::ElementState;
 use winit::keyboard::{KeyCode, PhysicalKey};
-use gpu::{MemoryAllocation, MemoryAllocator};
+use gpu::{CommandBuffer, MemoryAllocation, MemoryAllocator};
 
 const FRAMES_IN_FLIGHT: u64 = 2;
 
 fn load_obj<C>(path: impl AsRef<Path> + Debug,
-               push_vertex: impl Fn(&mut C, usize, Vec3, Vec2, Vec3),
+               push_vertex: impl Fn(&mut C, usize, Vec3, Vec2, Vec3, u32),
                make_vertex_container: impl FnOnce(usize) -> Result<C>) -> Result<C> {
     let (models, _) = tobj::load_obj(path, &tobj::LoadOptions {
         triangulate: true,
@@ -32,6 +32,7 @@ fn load_obj<C>(path: impl AsRef<Path> + Debug,
     let mut index = 0;
     for model in models {
         let mesh = model.mesh;
+        let material = u32::try_from(mesh.material_id.unwrap_or(0))?;
         for (i_p, (i_t, i_n)) in mesh.indices.into_iter()
             .zip(mesh.texcoord_indices.into_iter().zip(mesh.normal_indices.into_iter())) {
             let b_p = i_p as usize * 3;
@@ -54,6 +55,7 @@ fn load_obj<C>(path: impl AsRef<Path> + Debug,
                     mesh.normals[b_n + 1],
                     mesh.normals[b_n + 2],
                 ),
+                material,
             );
             index += 1;
             assert!(index <= length);
@@ -64,7 +66,7 @@ fn load_obj<C>(path: impl AsRef<Path> + Debug,
 }
 
 fn load_obj_cached<V: Pod, C>(path: impl AsRef<Path> + Debug, cache_path: impl AsRef<Path>,
-                              make_vertex: impl Fn(Vec3, Vec2, Vec3) -> V,
+                              make_vertex: impl Fn(Vec3, Vec2, Vec3, u32) -> V,
                               make_vertex_container: impl FnOnce(usize) -> Result<C>,
                               vertex_container_slice: impl Fn(&mut C) -> &mut [V]) -> Result<C> {
     if fs::exists(&cache_path)? {
@@ -78,8 +80,8 @@ fn load_obj_cached<V: Pod, C>(path: impl AsRef<Path> + Debug, cache_path: impl A
         file.read_exact(bytemuck::cast_slice_mut(slice))?;
         Ok(container)
     } else {
-        let mut container = load_obj(path, |container, index, pos, uv, nor| {
-            vertex_container_slice(container)[index] = make_vertex(pos, uv, nor)
+        let mut container = load_obj(path, |container, index, pos, uv, nor, mat| {
+            vertex_container_slice(container)[index] = make_vertex(pos, uv, nor, mat);
         }, make_vertex_container)?;
         let slice = vertex_container_slice(&mut container);
         fs::write(cache_path, bytemuck::cast_slice(slice))?;
@@ -87,9 +89,84 @@ fn load_obj_cached<V: Pod, C>(path: impl AsRef<Path> + Debug, cache_path: impl A
     }
 }
 
+fn load_materials(path: impl AsRef<Path> + Debug, gpu: &gpu::Gpu,
+                  texture_offset: u16) -> Result<(gpu::Allocation<'_, Material>, Vec<String>)> {
+    let (materials, _) = tobj::load_mtl(path)?;
+
+    let mut allocation = gpu.alloc::<Material>(materials.len())?;
+    let mem = allocation.host_mut();
+    let mut texture_paths = vec![];
+
+    for (i, material) in materials.into_iter().enumerate() {
+        assert_eq!(material.ambient_texture, material.diffuse_texture);
+        let mat = &mut mem[i];
+        if let Some(disp) = material.normal_texture {
+            mat.tex_disp = texture_offset + u16::try_from(texture_paths.len())?;
+            texture_paths.push(disp);
+        }
+        if let Some(diff) = material.diffuse_texture {
+            mat.tex_diffuse = texture_offset + u16::try_from(texture_paths.len())?;
+            texture_paths.push(diff);
+        }
+        let [r, g, b] = material.ambient.unwrap_or_default();
+        mat.ambient = Material::pack_vec4(Vec4::new(r, g, b, 0.0));
+        let [r, g, b] = material.diffuse.unwrap_or_default();
+        mat.diffuse_and_dissolve = Material::pack_vec4(
+            Vec4::new(r, g, b, material.dissolve.unwrap_or_default()));
+        let [r, g, b] = material.specular.unwrap_or_default();
+        mat.specular_and_exp = Material::pack_vec4
+            (Vec4::new(r, g, b, material.shininess.unwrap_or_default()));
+    }
+
+    // todo!();
+
+    Ok((allocation, texture_paths))
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-struct Vertex(Vec3, u32);
+struct Vertex(Vec3, u32, Vec2, Vec2);
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct Material {
+    pub tex_disp: u16,
+    pub tex_diffuse: u16,
+
+    pub ambient: u32,
+    pub diffuse_and_dissolve: u32,
+    pub specular_and_exp: u32,
+}
+
+impl Material {
+    fn pack_vec4(vec: Vec4) -> u32 {
+        let vec = (vec * 255.0).clamp(Vec4::splat(0.0), Vec4::splat(255.0));
+        u32::from_le_bytes([
+            vec.x as u8,
+            vec.y as u8,
+            vec.z as u8,
+            vec.w as u8,
+        ])
+    }
+}
+
+fn load_texture<'a>(path: impl AsRef<Path>, gpu: &'a gpu::Gpu,
+                    cmd_buf: &mut CommandBuffer<'_>) -> Result<(gpu::Texture<'a>, gpu::Allocation<'a, u8>)> {
+    let img = ImageReader::open(path)?
+        .with_guessed_format()?.decode()?.into_rgba8();
+    let img_alloc = gpu.allocator().alloc_data(img.as_bytes())?;
+
+    let tex = gpu.create_texture(gpu::TextureDesc {
+        ty: gpu::TextureType::Tex2D,
+        dimensions: (img.width(), img.height(), 1),
+        format: gpu::Format::RGBA8UNorm,
+        usage: gpu::TextureUsageFlags::Sampled,
+        ..Default::default()
+    }, cmd_buf)?;
+    cmd_buf.copy_to_texture(img_alloc.device(), &tex);
+
+    Ok((tex, img_alloc))
+}
 
 pub struct Application<'a> {
     gpu: &'a gpu::Gpu,
@@ -106,6 +183,8 @@ pub struct Application<'a> {
     tex_descriptors: gpu::DescriptorHeap<'a>,
     sampler_descriptors: gpu::DescriptorHeap<'a>,
     model: gpu::Allocation<'a, Vertex>,
+    materials: gpu::Allocation<'a, Material>,
+    material_textures: Vec<gpu::Texture<'a>>,
 
     keys: HashMap<PhysicalKey, bool>,
     camera_pos: Vec3,
@@ -117,28 +196,13 @@ impl<'a> Application<'a> {
     pub fn new(gpu: &'a gpu::Gpu, ctx: &dyn gpu::SwapchainContext) -> Result<Self> {
         let queue = gpu.create_queue(gpu::QueueType::Graphics)?;
 
-        let img = ImageReader::new(Cursor::new(include_bytes!("../models/viking_room/viking_room.png")))
-            .with_guessed_format()?.decode()?.into_rgba8();
-        let img_alloc = gpu.allocator().alloc_data(img.as_bytes())?;
-
         let mut command_buffer = queue.create_buffer()?;
 
         command_buffer.begin_recording()?;
 
-        let tex = gpu.create_texture(gpu::TextureDesc {
-            ty: gpu::TextureType::Tex2D,
-            dimensions: (img.width(), img.height(), 1),
-            format: gpu::Format::RGBA8UNorm,
-            usage: gpu::TextureUsageFlags::Sampled,
-            ..Default::default()
-        }, &mut command_buffer)?;
-        command_buffer.copy_to_texture(img_alloc.device(), &tex);
+        let (tex, tex_alloc) = load_texture("models/viking_room/viking_room.png", gpu, &mut command_buffer)?;
 
         let depth_buffer = Self::create_depth_buffer(gpu, ctx, &mut command_buffer)?;
-
-        command_buffer.end_recording()?;
-
-        queue.submit_no_signal(command_buffer)?.wait();
 
         let mut tex_descriptors = gpu.alloc_texture_descriptor_heap()?;
         let mut sampler_descriptors = gpu.alloc_sampler_descriptor_heap()?;
@@ -150,9 +214,28 @@ impl<'a> Application<'a> {
 
         let model = load_obj_cached(
             "models/Sponza/sponza.obj", "models/sponza.cache",
-            |pos, uv, _| Vertex(pos, Self::pack_tex_vertex(uv.x, uv.y, 0)),
+            |pos, uv, normal, mat| Vertex(pos, mat, uv, normal.normalize().xy()),
             |n| gpu.alloc::<Vertex>(n),
             |container| container.host_mut())?;
+        let (materials, texture_paths) = load_materials(
+            "models/Sponza/sponza.mtl", gpu, 1)?;
+
+        let mut material_textures = Vec::with_capacity(texture_paths.len());
+        let mut material_tex_allocations = Vec::with_capacity(texture_paths.len());
+        for (i, texture_path) in texture_paths.into_iter().enumerate() {
+            let (tex, tex_alloc) = load_texture("models/Sponza/".to_owned() + &texture_path, gpu, &mut command_buffer)?;
+            // texture index offset
+            tex.view_descriptor(&mut tex_descriptors[i + 1])?;
+            material_textures.push(tex);
+            material_tex_allocations.push(tex_alloc);
+        }
+
+        command_buffer.end_recording()?;
+
+        queue.submit_no_signal(command_buffer)?.wait();
+
+        drop(tex_alloc);
+        drop(material_tex_allocations);
 
         Ok(Self {
             gpu,
@@ -171,6 +254,8 @@ impl<'a> Application<'a> {
             tex_descriptors,
             sampler_descriptors,
             model,
+            materials,
+            material_textures,
 
             keys: HashMap::new(),
             camera_pos: Vec3::new(0.0, 0.0, 0.0),
@@ -268,15 +353,15 @@ impl<'a> Application<'a> {
              * Mat4::from_scale(Vec3::splat(0.01));
         let mat_mvp = mat_perspective * mat_flip * mat_view * mat_model;
 
-        const { assert!(size_of::<Vertex>() == 16) };
+        const { assert!(size_of::<Vertex>() == 32) };
 
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-        struct VertexData(Mat4, gpu::DevicePointer, u64);
+        struct VertexData(Mat4, gpu::DevicePointer, gpu::DevicePointer);
         let vertex_data = arena.alloc_data(&[VertexData(
             mat_mvp,
             self.model.device(),
-            0,
+            self.materials.device(),
         )])?;
 
         #[repr(C)]
