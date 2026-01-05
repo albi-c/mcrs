@@ -13,7 +13,8 @@ layout(set = 1, binding = 0) uniform writeonly image2D textures_rw[];
 layout(set = 2, binding = 0) uniform sampler samplers[];
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer FragData {
-    vec4 tint;
+    vec4 sunDirection;
+    vec4 lookDirection;
 };
 
 layout(std430, push_constant) uniform Data {
@@ -53,5 +54,9 @@ void main() {
     vec3 specular = specularAndExp.rgb;
     float specularExp = specularAndExp.a;
 
-    outColor = vec4(sampleDiffuse.rgb, 1.0);
+    float intensityAmbient = 0.05;
+    float intensityDiffuse = max(0.0, dot(inNormal, -data.frag.sunDirection.xyz));
+
+    outColor = vec4(sampleDiffuse.rgb * (ambient + diffuse), 1.0);
+//    outColor = vec4(inNormal, 1.0);
 }

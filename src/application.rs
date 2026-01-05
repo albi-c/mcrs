@@ -366,9 +366,10 @@ impl<'a> Application<'a> {
 
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-        struct PixelData(Vec3A);
+        struct PixelData(Vec3A, Vec3A);
         let pixel_data = arena.alloc_data(&[PixelData(
-            Vec3A::new(1.0, 1.0, 1.0),
+            Vec3A::new(0.0, -1.0, 1.0).normalize(),
+            self.camera_front.to_vec3a(),
         )])?;
 
         let mut command_buffer = self.queue.create_buffer()?;
