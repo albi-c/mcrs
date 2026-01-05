@@ -5,6 +5,8 @@
 layout(location = 0) in vec2 inUv;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) flat in uvec4 inMat;
+layout(location = 3) flat in vec3 inFlatNormal;
+layout(location = 4) flat in uint inUseFlatNormal;
 
 layout(location = 0) out vec4 outColor;
 
@@ -54,9 +56,12 @@ void main() {
     vec3 specular = specularAndExp.rgb;
     float specularExp = specularAndExp.a;
 
-    float intensityAmbient = 0.05;
-    float intensityDiffuse = max(0.0, dot(inNormal, -data.frag.sunDirection.xyz));
+    vec3 normal = (inUseFlatNormal == 0) ? inNormal : inFlatNormal;
+    float intensityAmbient = 0.1;
+    float intensityDiffuse = max(0.0, dot(normal, -data.frag.sunDirection.xyz));
 
-    outColor = vec4(sampleDiffuse.rgb * (ambient + diffuse), 1.0);
-//    outColor = vec4(inNormal, 1.0);
+    outColor = vec4(sampleDiffuse.rgb * (ambient + diffuse) * (intensityAmbient + intensityDiffuse), 1.0);
+//    outColor = vec4(normal, 1.0);
+//    float fn = (inUseFlatNormal == 0) ? 0.3 : 0.0;
+//    outColor = vec4(fn, 0.3 - fn, 0.0, 1.0);
 }

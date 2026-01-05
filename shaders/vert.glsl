@@ -5,6 +5,8 @@
 layout(location = 0) out vec2 outUv;
 layout(location = 1) out vec3 outNormal;
 layout(location = 2) flat out uvec4 outMat;
+layout(location = 3) flat out vec3 outFlatNormal;
+layout(location = 4) flat out uint outUseFlatNormal;
 
 struct Vertex {
     float x;
@@ -53,10 +55,13 @@ void main() {
     gl_Position = d.mvp * vec4(vertex.x, vertex.y, vertex.z, 1.0);
     outUv = vec2(vertex.uv.x, 1.0 - vertex.uv.y);
     vec2 n = vertex.nxy;
-    outNormal = vec3(n, sqrt(max(1.0 - n.x*n.x - n.y*n.y, 0.0)));
+    vec3 normal = vec3(n, sqrt(max(1.0 - n.x*n.x - n.y*n.y, 0.0)));
+    outNormal = normal;
+    outFlatNormal = normal;
 
-    Material material = d.materials.data[vertex.mat];
+    Material material = d.materials.data[vertex.mat & ~(1 << 31)];
     outMat = uvec4(material.texDiffuseDisp, material.ambient, material.diffuseAndDissolve, material.specularAndExp);
+    outUseFlatNormal = (vertex.mat & (1 << 31)) >> 31;
 
 //    uint tex = vertex.tex;
 //    float u = float(tex & ((1 << 10) - 1));

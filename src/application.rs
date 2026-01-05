@@ -3,69 +3,102 @@ use std::fmt::Debug;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2, Vec3, Vec3A, Vec3Swizzles, Vec4};
 use image::{EncodableLayout, ImageReader};
 use winit::event::ElementState;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use gpu::{CommandBuffer, MemoryAllocation, MemoryAllocator};
+use crate::obj;
 
 const FRAMES_IN_FLIGHT: u64 = 2;
 
 fn load_obj<C>(path: impl AsRef<Path> + Debug,
+               get_material: impl Fn(&str) -> Option<u32>,
                push_vertex: impl Fn(&mut C, usize, Vec3, Vec2, Vec3, u32),
                make_vertex_container: impl FnOnce(usize) -> Result<C>) -> Result<C> {
-    let (models, _) = tobj::load_obj(path, &tobj::LoadOptions {
-        triangulate: true,
-        ..Default::default()
-    })?;
+    let model = obj::Model::read(
+        path, |mat| get_material(mat).ok_or_else(|| anyhow!("invalid material id: {}", mat)))?;
 
     let mut length = 0;
-    for model in &models {
-        length += model.mesh.indices.len();;
-        assert_eq!(model.mesh.indices.len(), model.mesh.texcoord_indices.len());
-        assert_eq!(model.mesh.indices.len(), model.mesh.normal_indices.len());
+    for obj in &model.objects {
+        length += 3 * obj.faces.len();
     }
 
     let mut vertices = make_vertex_container(length)?;
     let mut index = 0;
-    for model in models {
-        let mesh = model.mesh;
-        let material = u32::try_from(mesh.material_id.unwrap_or(0))?;
-        for (i_p, (i_t, i_n)) in mesh.indices.into_iter()
-            .zip(mesh.texcoord_indices.into_iter().zip(mesh.normal_indices.into_iter())) {
-            let b_p = i_p as usize * 3;
-            let b_t = i_t as usize * 2;
-            let b_n = i_n as usize * 3;
-            push_vertex(
-                &mut vertices,
-                index,
-                Vec3::new(
-                    mesh.positions[b_p + 0],
-                    mesh.positions[b_p + 1],
-                    mesh.positions[b_p + 2],
-                ),
-                Vec2::new(
-                    mesh.texcoords[b_t + 0],
-                    mesh.texcoords[b_t + 1],
-                ),
-                Vec3::new(
-                    mesh.normals[b_n + 0],
-                    mesh.normals[b_n + 1],
-                    mesh.normals[b_n + 2],
-                ),
-                material,
-            );
-            index += 1;
-            assert!(index <= length);
+    for obj in model.objects {
+        for face in obj.faces {
+            for vertex in face {
+                push_vertex(
+                    &mut vertices,
+                    index,
+                    model.vertices[vertex.vertex as usize],
+                    model.tex_coords[vertex.tex_coord as usize],
+                    model.normals[vertex.normal as usize],
+                    vertex.material,
+                );
+                index += 1;
+            }
         }
     }
 
+    assert_eq!(index, length);
+
     Ok(vertices)
+
+    // let (models, _) = tobj::load_obj(path, &tobj::LoadOptions {
+    //     triangulate: true,
+    //     ..Default::default()
+    // })?;
+    //
+    // let mut length = 0;
+    // for model in &models {
+    //     length += model.mesh.indices.len();
+    //     assert_eq!(model.mesh.indices.len(), model.mesh.texcoord_indices.len());
+    //     assert_eq!(model.mesh.indices.len(), model.mesh.normal_indices.len());
+    // }
+    //
+    // let mut vertices = make_vertex_container(length)?;
+    // let mut index = 0;
+    // for model in models {
+    //     let mesh = model.mesh;
+    //     let material = u32::try_from(mesh.material_id.unwrap_or(0))?;
+    //     for (i_p, (i_t, i_n)) in mesh.indices.into_iter()
+    //         .zip(mesh.texcoord_indices.into_iter().zip(mesh.normal_indices.into_iter())) {
+    //         let b_p = i_p as usize * 3;
+    //         let b_t = i_t as usize * 2;
+    //         let b_n = i_n as usize * 3;
+    //         push_vertex(
+    //             &mut vertices,
+    //             index,
+    //             Vec3::new(
+    //                 mesh.positions[b_p + 0],
+    //                 mesh.positions[b_p + 1],
+    //                 mesh.positions[b_p + 2],
+    //             ),
+    //             Vec2::new(
+    //                 mesh.texcoords[b_t + 0],
+    //                 mesh.texcoords[b_t + 1],
+    //             ),
+    //             Vec3::new(
+    //                 mesh.normals[b_n + 0],
+    //                 mesh.normals[b_n + 1],
+    //                 mesh.normals[b_n + 2],
+    //             ),
+    //             material,
+    //         );
+    //         index += 1;
+    //         assert!(index <= length);
+    //     }
+    // }
+    //
+    // Ok(vertices)
 }
 
-fn load_obj_cached<V: Pod, C>(path: impl AsRef<Path> + Debug, cache_path: impl AsRef<Path>,
+fn load_obj_cached<V: Pod, C>(path: &str, cache_path: impl AsRef<Path>,
+                              get_material: impl Fn(&str) -> Option<u32>,
                               make_vertex: impl Fn(Vec3, Vec2, Vec3, u32) -> V,
                               make_vertex_container: impl FnOnce(usize) -> Result<C>,
                               vertex_container_slice: impl Fn(&mut C) -> &mut [V]) -> Result<C> {
@@ -80,9 +113,14 @@ fn load_obj_cached<V: Pod, C>(path: impl AsRef<Path> + Debug, cache_path: impl A
         file.read_exact(bytemuck::cast_slice_mut(slice))?;
         Ok(container)
     } else {
-        let mut container = load_obj(path, |container, index, pos, uv, nor, mat| {
-            vertex_container_slice(container)[index] = make_vertex(pos, uv, nor, mat);
-        }, make_vertex_container)?;
+        let mut container = load_obj(
+            path,
+            get_material,
+            |container, index, pos, uv, nor, mat| {
+                vertex_container_slice(container)[index] = make_vertex(pos, uv, nor, mat);
+            },
+            make_vertex_container,
+        )?;
         let slice = vertex_container_slice(&mut container);
         fs::write(cache_path, bytemuck::cast_slice(slice))?;
         Ok(container)
@@ -90,8 +128,9 @@ fn load_obj_cached<V: Pod, C>(path: impl AsRef<Path> + Debug, cache_path: impl A
 }
 
 fn load_materials(path: impl AsRef<Path> + Debug, gpu: &gpu::Gpu,
-                  texture_offset: u16) -> Result<(gpu::Allocation<'_, Material>, Vec<String>)> {
-    let (materials, _) = tobj::load_mtl(path)?;
+                  texture_offset: u16) -> Result<(gpu::Allocation<'_, Material>, Vec<String>,
+                                                  impl Fn(&str) -> Option<u32>)> {
+    let (materials, by_name) = tobj::load_mtl(path)?;
 
     let mut allocation = gpu.alloc::<Material>(materials.len())?;
     let mem = allocation.host_mut();
@@ -118,9 +157,9 @@ fn load_materials(path: impl AsRef<Path> + Debug, gpu: &gpu::Gpu,
             (Vec4::new(r, g, b, material.shininess.unwrap_or_default()));
     }
 
-    // todo!();
-
-    Ok((allocation, texture_paths))
+    Ok((allocation, texture_paths, move |name: &str| {
+        by_name.get(name).map(|&index| index as u32)
+    }))
 }
 
 #[repr(C)]
@@ -212,13 +251,14 @@ impl<'a> Application<'a> {
             ..Default::default()
         }, &mut sampler_descriptors[0])?;
 
+        let (materials, texture_paths, mat_by_name) = load_materials(
+            "models/Sponza/sponza.mtl", gpu, 1)?;
         let model = load_obj_cached(
             "models/Sponza/sponza.obj", "models/sponza.cache",
+            mat_by_name,
             |pos, uv, normal, mat| Vertex(pos, mat, uv, normal.normalize().xy()),
             |n| gpu.alloc::<Vertex>(n),
             |container| container.host_mut())?;
-        let (materials, texture_paths) = load_materials(
-            "models/Sponza/sponza.mtl", gpu, 1)?;
 
         let mut material_textures = Vec::with_capacity(texture_paths.len());
         let mut material_tex_allocations = Vec::with_capacity(texture_paths.len());

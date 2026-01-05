@@ -1,5 +1,8 @@
+#![feature(file_buffered)]
+
 mod application;
 mod gltf;
+mod obj;
 
 use std::cell::Cell;
 use std::collections::HashSet;
