@@ -1,4 +1,5 @@
 #![feature(file_buffered)]
+#![feature(map_try_insert)]
 
 mod application;
 mod gltf;

@@ -27,4 +27,4 @@ bytemuck = { workspace = true }
 image = "0.25.9"
 lz4 = "1.28.1"
 tobj = "4.0.3"
-gltf = { version = "1.4.1", features = ["names"] }
+easy-gltf = "1.1.5"

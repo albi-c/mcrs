@@ -11,8 +11,7 @@ use image::{EncodableLayout, ImageReader};
 use winit::event::ElementState;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use gpu::{CommandBuffer, MemoryAllocation, MemoryAllocator};
-use crate::gltf::load_gltf;
-use crate::obj;
+use crate::{gltf, obj};
 
 const FRAMES_IN_FLIGHT: u64 = 2;
 
@@ -166,11 +165,11 @@ fn load_materials(path: impl AsRef<Path> + Debug, gpu: &gpu::Gpu,
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-struct Vertex(Vec3, u32, Vec2, Vec2);
+pub struct Vertex(pub Vec3, pub u32, pub Vec2, pub Vec2);
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-struct Material {
+pub struct Material {
     pub tex_disp: u16,
     pub tex_diffuse: u16,
 
@@ -180,7 +179,7 @@ struct Material {
 }
 
 impl Material {
-    fn pack_vec4(vec: Vec4) -> u32 {
+    pub fn pack_vec4(vec: Vec4) -> u32 {
         let vec = (vec * 255.0).clamp(Vec4::splat(0.0), Vec4::splat(255.0));
         u32::from_le_bytes([
             vec.x as u8,
@@ -288,7 +287,7 @@ impl<'a> Application<'a> {
             ..Default::default()
         }, &mut sampler_descriptors[0])?;
 
-        // let gltf = load_gltf("models/Sponza_gltf/glTF/sponza.gltf")?;
+        let gltf = gltf::load_gltf("models/Sponza_gltf/glTF/Sponza.gltf", gpu)?;
 
         let (materials, texture_paths, mat_by_name) = load_materials(
             "models/Sponza/sponza.mtl", gpu, 1)?;
