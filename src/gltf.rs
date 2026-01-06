@@ -43,11 +43,9 @@ macro_rules! convert_vec {
 
 fn load_materials<'a, 'b>(material_iter: impl IntoIterator<Item = (&'b easy_gltf::Material, u32)>, count: usize, gpu: &'a gpu::Gpu,
                           tex_descriptors: &mut gpu::DescriptorHeap<'a>, tex_offset: &mut u16) -> Result<(Vec<gpu::Texture<'a>>, gpu::Allocation<'a, Material>)> {
-    let mut texture_allocations = vec![];
     let mut textures = vec![];
     let queue = gpu.create_queue(gpu::QueueType::Graphics)?;
     let mut cmd_buf = queue.create_buffer()?;
-    cmd_buf.begin_recording()?;  // TODO: move into create and submit methods
 
     let mut materials = gpu.alloc::<Material>(count)?;
     for (material, index) in material_iter.into_iter().sorted_unstable_by_key(|(_, i)| *i) {
@@ -56,14 +54,13 @@ fn load_materials<'a, 'b>(material_iter: impl IntoIterator<Item = (&'b easy_gltf
         let pbr = &material.pbr;
         let color_tex = pbr.base_color_texture.as_ref().ok_or_else(|| anyhow!("material missing color texture"))?;
         let alloc = gpu.allocator().alloc_data(color_tex.as_bytes())?;
-        let (tex, alloc) = create_texture(
+        let tex = create_texture(
             gpu, (color_tex.width(), color_tex.height()),
             alloc, gpu::Format::RGBA8UNorm, &mut cmd_buf)?;
         let tex_diffuse = *tex_offset;
         tex.view_descriptor(&mut tex_descriptors[tex_diffuse as usize])?;
         *tex_offset += 1;
         textures.push(tex);
-        texture_allocations.push(alloc);
 
         let mut ambient_and_intensity = convert_vec!(4 pbr.base_color_factor);
         ambient_and_intensity.w = 0.0;
@@ -79,10 +76,7 @@ fn load_materials<'a, 'b>(material_iter: impl IntoIterator<Item = (&'b easy_gltf
         materials.host_mut()[index as usize] = mat;
     }
 
-    cmd_buf.end_recording()?;
     queue.submit_no_signal(cmd_buf)?.wait();
-
-    drop(texture_allocations);
 
     Ok((textures, materials))
 }

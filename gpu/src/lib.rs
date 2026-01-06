@@ -8,6 +8,7 @@ mod arena;
 use std::alloc::Layout;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::{Bound, Index, IndexMut};
@@ -751,16 +752,29 @@ pub struct BlendState<'a> {
 }
 
 #[derive(Debug)]
-pub struct SubmitWait<'a>(vk::Semaphore, u64, &'a Gpu);
+pub struct SubmitWait<'a>(vk::Semaphore, u64, &'a Gpu, Box<[Box<dyn Debug + 'a>]>);
+
+impl<'a> Drop for SubmitWait<'a> {
+    fn drop(&mut self) {
+        if !self.3.is_empty() {
+            if std::thread::panicking() {
+                log::error!("buffer submit result with owned values dropped without waiting");
+            } else {
+                panic!("buffer submit result with owned values dropped without waiting");
+            }
+        }
+    }
+}
 
 impl<'a> SubmitWait<'a> {
-    pub fn wait(self) {
+    pub fn wait(mut self) {
         let semaphores = [self.0];
         let values = [self.1];
         let info = vk::SemaphoreWaitInfo::builder()
             .semaphores(&semaphores)
             .values(&values);
         unsafe { self.2.device.wait_semaphores_khr(&info, u64::MAX).expect("semaphore wait failed") };
+        drop(std::mem::take(&mut self.3));
     }
 }
 
@@ -778,11 +792,14 @@ impl<'a> Queue<'a> {
 
     fn create_buffer_gpu(&self, gpu: &'a Gpu) -> Result<CommandBuffer<'_>> {
         let buffer = self.command_pool.acquire(&gpu.device)?;
-        Ok(CommandBuffer {
+        let mut buffer = CommandBuffer {
             buffer: buffer.data().0,
-            item: buffer,
+            item: Some(buffer),
             gpu,
-        })
+            owned_resources: vec![],
+        };
+        buffer.begin_recording()?;
+        Ok(buffer)
     }
 
     pub fn submit(&self, buffer: CommandBuffer<'a>, signal_semaphore: &Semaphore<'a>,
@@ -792,33 +809,38 @@ impl<'a> Queue<'a> {
 
     pub fn submit_no_signal(&self, mut buffer: CommandBuffer<'a>) -> Result<SubmitWait<'_>> {
         let (buffer_semaphore, buffer_value) = Self::buffer_prepare_submit(&mut buffer);
+        let owned_resources = std::mem::take(&mut buffer.owned_resources);
         self.custom_submit(self.gpu.unwrap(), buffer,
                            &[buffer_semaphore],
                            &[buffer_value],
                            &[], &[], &[])?;
-        Ok(SubmitWait(buffer_semaphore, buffer_value, self.gpu.unwrap()))
+        Ok(SubmitWait(buffer_semaphore, buffer_value, self.gpu.unwrap(), owned_resources.into_boxed_slice()))
     }
 
     fn buffer_prepare_submit(buffer: &mut CommandBuffer<'a>) -> (vk::Semaphore, u64) {
-        let buffer_data = buffer.item.data_mut();
+        let buffer_data = buffer.item.as_mut()
+            .expect("command buffer submitted twice").data_mut();
         buffer_data.2 += 1;
         (buffer_data.1, buffer_data.2)
     }
 
     fn submit_gpu<'b>(&self, gpu: &'b Gpu, mut buffer: CommandBuffer<'a>, signal_semaphore: &Semaphore<'a>,
-                      signal_value: u64) -> Result<SubmitWait<'b>> {
+                      signal_value: u64) -> Result<SubmitWait<'b>> where 'a: 'b {
         let (buffer_semaphore, buffer_value) = Self::buffer_prepare_submit(&mut buffer);
+        let owned_resources = std::mem::take(&mut buffer.owned_resources);
         self.custom_submit(gpu, buffer,
                            &[signal_semaphore.semaphore, buffer_semaphore],
                            &[signal_value, buffer_value],
                            &[], &[], &[])?;
-        Ok(SubmitWait(buffer_semaphore, buffer_value, gpu))
+        Ok(SubmitWait(buffer_semaphore, buffer_value, gpu, owned_resources.into_boxed_slice()))
     }
 
-    fn custom_submit(&self, gpu: &Gpu, buffer: CommandBuffer<'a>,
+    fn custom_submit(&self, gpu: &Gpu, mut buffer: CommandBuffer<'a>,
                      signal_semaphores: &[vk::Semaphore], signal_values: &[u64],
                      wait_semaphores: &[vk::Semaphore], wait_values: &[u64],
                      wait_dst_stage_mask: &[vk::PipelineStageFlags]) -> Result<()> {
+        buffer.end_recording()?;
+
         let mut semaphore_info = vk::TimelineSemaphoreSubmitInfo::builder()
             .wait_semaphore_values(wait_values)
             .signal_semaphore_values(signal_values);
@@ -833,7 +855,8 @@ impl<'a> Queue<'a> {
 
         unsafe { gpu.device.queue_submit(self.queue, &[info], vk::Fence::null())? };
 
-        self.command_pool.release(&gpu.device, buffer.item);
+        self.command_pool.release(&gpu.device, buffer.item.take()
+            .expect("command buffer submitted twice"));
 
         Ok(())
     }
@@ -842,17 +865,37 @@ impl<'a> Queue<'a> {
 #[derive(Debug)]
 pub struct CommandBuffer<'a> {
     buffer: vk::CommandBuffer,
-    item: PooledCommandBuffer,
+    item: Option<PooledCommandBuffer>,
     gpu: &'a Gpu,
+    owned_resources: Vec<Box<dyn Debug + 'a>>,
+}
+
+impl<'a> Drop for CommandBuffer<'a> {
+    fn drop(&mut self) {
+        if self.item.is_some() {
+            if std::thread::panicking() {
+                log::error!("Command buffer dropped before submission");
+            } else {
+                panic!("Command buffer dropped before submission");
+            }
+        }
+    }
 }
 
 impl<'a> CommandBuffer<'a> {
-    pub fn begin_recording(&mut self) -> Result<()> {
+    pub fn give_ownership_box(&mut self, resource: Box<dyn Debug + 'a>) {
+        self.owned_resources.push(resource);
+    }
+    pub fn give_ownership(&mut self, resource: impl Debug + 'a) {
+        self.give_ownership_box(Box::new(resource));
+    }
+
+    fn begin_recording(&mut self) -> Result<()> {
         let info = vk::CommandBufferBeginInfo::builder();
         unsafe { self.gpu.device.begin_command_buffer(self.buffer, &info)? };
         Ok(())
     }
-    pub fn end_recording(&mut self) -> Result<()> {
+    fn end_recording(&mut self) -> Result<()> {
         unsafe { self.gpu.device.end_command_buffer(self.buffer)? };
         Ok(())
     }
@@ -1631,7 +1674,6 @@ impl Gpu {
 
         let graphics_queue = self.queues.graphics(self);
         let mut cmd_buf = graphics_queue.create_buffer()?;
-        cmd_buf.begin_recording()?;
 
         cmd_buf.image_barrier(
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR,
@@ -1639,8 +1681,6 @@ impl Gpu {
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::BOTTOM_OF_PIPE,
             false
         );
-
-        cmd_buf.end_recording()?;
 
         let wait_semaphores = [present_semaphore];
         let swapchains = [swapchain.swapchain];

@@ -227,8 +227,8 @@ fn load_image(path: impl AsRef<Path>, gpu: &gpu::Gpu) -> Result<(u32, u32, gpu::
     }
 }
 
-pub fn create_texture<'a>(gpu: &'a gpu::Gpu, (width, height): (u32, u32), alloc: gpu::Allocation<'a, u8>,
-                          format: gpu::Format, cmd_buf: &mut gpu::CommandBuffer<'_>) -> Result<(gpu::Texture<'a>, gpu::Allocation<'a, u8>)> {
+pub fn create_texture<'a, 'b>(gpu: &'a gpu::Gpu, (width, height): (u32, u32), alloc: gpu::Allocation<'a, u8>,
+                              format: gpu::Format, cmd_buf: &mut gpu::CommandBuffer<'b>) -> Result<gpu::Texture<'a>> where 'a: 'b {
     let tex = gpu.create_texture(gpu::TextureDesc {
         ty: gpu::TextureType::Tex2D,
         dimensions: (width, height, 1),
@@ -237,12 +237,13 @@ pub fn create_texture<'a>(gpu: &'a gpu::Gpu, (width, height): (u32, u32), alloc:
         ..Default::default()
     }, cmd_buf)?;
     cmd_buf.copy_to_texture(alloc.device(), &tex);
+    cmd_buf.give_ownership(alloc);
 
-    Ok((tex, alloc))
+    Ok(tex)
 }
 
-fn load_texture<'a>(path: impl AsRef<Path>, gpu: &'a gpu::Gpu,
-                    cmd_buf: &mut gpu::CommandBuffer<'_>) -> Result<(gpu::Texture<'a>, gpu::Allocation<'a, u8>)> {
+fn load_texture<'a, 'b>(path: impl AsRef<Path>, gpu: &'a gpu::Gpu,
+                        cmd_buf: &mut gpu::CommandBuffer<'b>) -> Result<gpu::Texture<'a>> where 'a: 'b {
     let (width, height, alloc) = load_image(path, gpu)?;
     create_texture(gpu, (width, height), alloc, gpu::Format::RGBA8UNorm, cmd_buf)
 }
@@ -279,9 +280,7 @@ impl<'a> Application<'a> {
 
         let mut command_buffer = queue.create_buffer()?;
 
-        command_buffer.begin_recording()?;
-
-        let (tex, tex_alloc) = load_texture("models/viking_room/viking_room.png", gpu, &mut command_buffer)?;
+        let tex = load_texture("models/viking_room/viking_room.png", gpu, &mut command_buffer)?;
 
         let depth_buffer = Self::create_depth_buffer(gpu, ctx, &mut command_buffer)?;
 
@@ -303,21 +302,13 @@ impl<'a> Application<'a> {
             |container| container.host_mut())?;
 
         let mut material_textures = Vec::with_capacity(texture_paths.len());
-        let mut material_tex_allocations = Vec::with_capacity(texture_paths.len());
         for (i, texture_path) in texture_paths.into_iter().enumerate() {
-            let (tex, tex_alloc) = load_texture("models/Sponza/".to_owned() + &texture_path, gpu, &mut command_buffer)?;
-            // texture index offset
+            let tex = load_texture("models/Sponza/".to_owned() + &texture_path, gpu, &mut command_buffer)?;
             tex.view_descriptor(&mut tex_descriptors[i + 1])?;
             material_textures.push(tex);
-            material_tex_allocations.push(tex_alloc);
         }
 
-        command_buffer.end_recording()?;
-
         queue.submit_no_signal(command_buffer)?.wait();
-
-        drop(tex_alloc);
-        drop(material_tex_allocations);
 
         let gltf = gltf::load_gltf(
             "models/Sponza_gltf/glTF/Sponza.gltf", gpu,
@@ -460,8 +451,6 @@ impl<'a> Application<'a> {
 
         let mut command_buffer = self.queue.create_buffer()?;
 
-        command_buffer.begin_recording()?;
-
         let mut swapchain_target = self.gpu.next_swapchain_image(ctx, &mut command_buffer)?;
         swapchain_target.clear_value = gpu::ClearValue::Color([0.08, 0.0, 0.0, 1.0]);
         let depth_target = gpu::Target {
@@ -496,8 +485,6 @@ impl<'a> Application<'a> {
             indices.device(), indices.len() as u32, gpu::IndexType::U32);
         command_buffer.end_render_pass();
 
-        command_buffer.end_recording()?;
-
         self.queue.submit(command_buffer, &self.frame_semaphore, self.next_frame)?;
         self.gpu.swapchain_present(&self.frame_semaphore, self.next_frame)?;
 
@@ -509,11 +496,7 @@ impl<'a> Application<'a> {
     pub fn resize(&mut self, ctx: &dyn gpu::SwapchainContext) -> Result<()> {
         let mut command_buffer = self.queue.create_buffer()?;
 
-        command_buffer.begin_recording()?;
-
         let depth_buffer = Self::create_depth_buffer(self.gpu, ctx, &mut command_buffer)?;
-
-        command_buffer.end_recording()?;
 
         self.queue.submit_no_signal(command_buffer)?.wait();
 
