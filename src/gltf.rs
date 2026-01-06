@@ -4,22 +4,20 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use easy_gltf::model::Mode;
 use glam::{Vec2, Vec3, Vec3Swizzles, Vec4};
-use gpu::MemoryAllocation;
-use crate::application::{Material, Vertex};
+use image::EncodableLayout;
+use itertools::Itertools;
+use gpu::{MemoryAllocation, MemoryAllocator};
+use crate::application::{create_texture, Material, Vertex};
 
 pub struct Scene<'a> {
-    indices: gpu::Allocation<'a, u32>,
-    vertices: gpu::Allocation<'a, Vertex>,
-    materials: gpu::Allocation<'a, Material>,
+    pub indices: gpu::Allocation<'a, u32>,
+    pub vertices: gpu::Allocation<'a, Vertex>,
+    pub materials: gpu::Allocation<'a, Material>,
+    pub textures: Vec<gpu::Texture<'a>>,
 }
 
 pub struct Model<'a> {
-    scenes: Vec<Scene<'a>>,
-}
-
-trait ConvertVector : Copy + 'static {
-    type Output: Copy + 'static;
-    fn conv(self) -> Self::Output;
+    pub scenes: Vec<Scene<'a>>,
 }
 
 macro_rules! convert_vec {
@@ -43,7 +41,54 @@ macro_rules! convert_vec {
     };
 }
 
-fn load_scene(scene: easy_gltf::Scene, gpu: &gpu::Gpu) -> Result<Scene<'_>> {
+fn load_materials<'a, 'b>(material_iter: impl IntoIterator<Item = (&'b easy_gltf::Material, u32)>, count: usize, gpu: &'a gpu::Gpu,
+                          tex_descriptors: &mut gpu::DescriptorHeap<'a>, tex_offset: &mut u16) -> Result<(Vec<gpu::Texture<'a>>, gpu::Allocation<'a, Material>)> {
+    let mut texture_allocations = vec![];
+    let mut textures = vec![];
+    let queue = gpu.create_queue(gpu::QueueType::Graphics)?;
+    let mut cmd_buf = queue.create_buffer()?;
+    cmd_buf.begin_recording()?;  // TODO: move into create and submit methods
+
+    let mut materials = gpu.alloc::<Material>(count)?;
+    for (material, index) in material_iter.into_iter().sorted_unstable_by_key(|(_, i)| *i) {
+        // TODO: emissive
+        // TODO: pbr textures
+        let pbr = &material.pbr;
+        let color_tex = pbr.base_color_texture.as_ref().ok_or_else(|| anyhow!("material missing color texture"))?;
+        let alloc = gpu.allocator().alloc_data(color_tex.as_bytes())?;
+        let (tex, alloc) = create_texture(
+            gpu, (color_tex.width(), color_tex.height()),
+            alloc, gpu::Format::RGBA8UNorm, &mut cmd_buf)?;
+        let tex_diffuse = *tex_offset;
+        tex.view_descriptor(&mut tex_descriptors[tex_diffuse as usize])?;
+        *tex_offset += 1;
+        textures.push(tex);
+        texture_allocations.push(alloc);
+
+        let mut ambient_and_intensity = convert_vec!(4 pbr.base_color_factor);
+        ambient_and_intensity.w = 0.0;
+
+        let mat = Material {
+            tex_disp: 0,
+            tex_diffuse,
+
+            ambient_and_intensity: Material::pack_vec4(ambient_and_intensity),
+            diffuse_and_dissolve: Material::pack_vec4(Vec4::new(1.0, 1.0, 1.0, 0.0)),
+            specular_and_exp: Material::pack_vec4(Vec4::new(0.0, 0.0, 0.0, 0.0)),
+        };
+        materials.host_mut()[index as usize] = mat;
+    }
+
+    cmd_buf.end_recording()?;
+    queue.submit_no_signal(cmd_buf)?.wait();
+
+    drop(texture_allocations);
+
+    Ok((textures, materials))
+}
+
+fn load_scene<'a>(scene: easy_gltf::Scene, gpu: &'a gpu::Gpu,
+                  tex_descriptors: &mut gpu::DescriptorHeap<'a>, tex_offset: &mut u16) -> Result<Scene<'a>> {
     let mut index_count = 0;
     let mut vertex_count = 0;
     let mut material_count = 0;
@@ -56,23 +101,20 @@ fn load_scene(scene: easy_gltf::Scene, gpu: &gpu::Gpu) -> Result<Scene<'_>> {
         index_count += model.indices().ok_or_else(|| anyhow!("gltf model must have indices"))?.len();
         vertex_count += model.vertices().len();
         let material = model.material();
-        if material_indices.try_insert(Arc::as_ptr(&material), (material, material_count)).is_err() {
+        if material_indices.try_insert(Arc::as_ptr(&material), (material, material_count)).is_ok() {
             material_count += 1;
         }
     }
 
-    let mut materials = gpu.alloc::<Material>(material_count as usize)?;
-    for (material, index) in material_indices.values() {
-        let mat = Material {
-            tex_disp: 0,
-            tex_diffuse: 0,
-
-            ambient: 0,
-            diffuse_and_dissolve: 0,
-            specular_and_exp: 0,
-        };
-        materials.host_mut()[*index as usize] = mat;
-    }
+    let (textures, materials) = load_materials(
+        material_indices
+            .values()
+            .map(|(mat, idx)| (mat.as_ref(), *idx)),
+        material_count as usize,
+        gpu,
+        tex_descriptors,
+        tex_offset
+    )?;
 
     let mut indices = gpu.alloc::<u32>(index_count)?;
     let mut vertices = gpu.alloc::<Vertex>(vertex_count)?;
@@ -111,14 +153,18 @@ fn load_scene(scene: easy_gltf::Scene, gpu: &gpu::Gpu) -> Result<Scene<'_>> {
         indices,
         vertices,
         materials,
+        textures,
     })
 }
 
-pub fn load_gltf(path: impl AsRef<Path>, gpu: &gpu::Gpu) -> Result<Model<'_>> {
+pub fn load_gltf<'a>(path: impl AsRef<Path>, gpu: &'a gpu::Gpu,
+                     tex_descriptors: &mut gpu::DescriptorHeap<'a>, mut tex_offset: u16) -> Result<Model<'a>> {
     let scenes = easy_gltf::load(path)
         .map_err(|e| anyhow!("failed to load gltf: {}", e))?;
 
     Ok(Model {
-        scenes: scenes.into_iter().map(|scene| load_scene(scene, gpu)).collect::<Result<_>>()?,
+        scenes: scenes.into_iter()
+            .map(|scene| load_scene(scene, gpu, tex_descriptors, &mut tex_offset))
+            .collect::<Result<_>>()?,
     })
 }

@@ -46,7 +46,9 @@ void main() {
     }
     vec4 sampleDisp = texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv);
 
-    vec3 ambient = readPacked(inMat.y).rgb;
+    vec4 ambientAndIntensity = readPacked(inMat.y);
+    vec3 ambient = ambientAndIntensity.rgb;
+    float intensityAmbient = max(ambientAndIntensity.a, 0.2);
 
     vec4 diffuseAndDissolve = readPacked(inMat.z);
     vec3 diffuse = diffuseAndDissolve.rgb;
@@ -57,10 +59,9 @@ void main() {
     float specularExp = specularAndExp.a;
 
     vec3 normal = (inUseFlatNormal == 0) ? inNormal : inFlatNormal;
-    float intensityAmbient = 0.1;
-    float intensityDiffuse = max(0.0, dot(normal, -data.frag.sunDirection.xyz));
+    float intensityDiffuse = max(0.0, dot(normal, -data.frag.sunDirection.xyz)) * 0.6;
 
-    outColor = vec4(sampleDiffuse.rgb * (ambient + diffuse) * (intensityAmbient + intensityDiffuse), 1.0);
+    outColor = vec4(sampleDiffuse.rgb * (ambient * intensityAmbient + diffuse * intensityDiffuse), 1.0);
 //    outColor = vec4(normal, 1.0);
 //    float fn = (inUseFlatNormal == 0) ? 0.3 : 0.0;
 //    outColor = vec4(fn, 0.3 - fn, 0.0, 1.0);

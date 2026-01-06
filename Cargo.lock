@@ -1135,6 +1135,7 @@ dependencies = [
  "glam",
  "gpu",
  "image",
+ "itertools",
  "log",
  "lz4",
  "pretty_env_logger",

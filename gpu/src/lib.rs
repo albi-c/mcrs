@@ -31,8 +31,8 @@ pub fn need_portability_ext(version: Version) -> bool {
     cfg!(target_os = "macos") && version >= PORTABILITY_MACOS_VERSION
 }
 
-pub fn validation_enabled() -> bool {
-    cfg!(debug_assertions)
+pub const fn validation_enabled() -> bool {
+    cfg!(debug_assertions) || true
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]

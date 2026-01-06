@@ -10,7 +10,7 @@ use glam::{Mat4, Vec2, Vec3, Vec3A, Vec3Swizzles, Vec4};
 use image::{EncodableLayout, ImageReader};
 use winit::event::ElementState;
 use winit::keyboard::{KeyCode, PhysicalKey};
-use gpu::{CommandBuffer, MemoryAllocation, MemoryAllocator};
+use gpu::{MemoryAllocation, MemoryAllocator};
 use crate::{gltf, obj};
 
 const FRAMES_IN_FLIGHT: u64 = 2;
@@ -149,7 +149,7 @@ fn load_materials(path: impl AsRef<Path> + Debug, gpu: &gpu::Gpu,
             texture_paths.push(diff);
         }
         let [r, g, b] = material.ambient.unwrap_or_default();
-        mat.ambient = Material::pack_vec4(Vec4::new(r, g, b, 0.0));
+        mat.ambient_and_intensity = Material::pack_vec4(Vec4::new(r, g, b, 0.0));
         let [r, g, b] = material.diffuse.unwrap_or_default();
         mat.diffuse_and_dissolve = Material::pack_vec4(
             Vec4::new(r, g, b, material.dissolve.unwrap_or_default()));
@@ -173,7 +173,7 @@ pub struct Material {
     pub tex_disp: u16,
     pub tex_diffuse: u16,
 
-    pub ambient: u32,
+    pub ambient_and_intensity: u32,
     pub diffuse_and_dissolve: u32,
     pub specular_and_exp: u32,
 }
@@ -227,20 +227,24 @@ fn load_image(path: impl AsRef<Path>, gpu: &gpu::Gpu) -> Result<(u32, u32, gpu::
     }
 }
 
-fn load_texture<'a>(path: impl AsRef<Path>, gpu: &'a gpu::Gpu,
-                    cmd_buf: &mut CommandBuffer<'_>) -> Result<(gpu::Texture<'a>, gpu::Allocation<'a, u8>)> {
-    let (width, height, alloc) = load_image(path, gpu)?;
-
+pub fn create_texture<'a>(gpu: &'a gpu::Gpu, (width, height): (u32, u32), alloc: gpu::Allocation<'a, u8>,
+                          format: gpu::Format, cmd_buf: &mut gpu::CommandBuffer<'_>) -> Result<(gpu::Texture<'a>, gpu::Allocation<'a, u8>)> {
     let tex = gpu.create_texture(gpu::TextureDesc {
         ty: gpu::TextureType::Tex2D,
         dimensions: (width, height, 1),
-        format: gpu::Format::RGBA8UNorm,
+        format,
         usage: gpu::TextureUsageFlags::Sampled,
         ..Default::default()
     }, cmd_buf)?;
     cmd_buf.copy_to_texture(alloc.device(), &tex);
 
     Ok((tex, alloc))
+}
+
+fn load_texture<'a>(path: impl AsRef<Path>, gpu: &'a gpu::Gpu,
+                    cmd_buf: &mut gpu::CommandBuffer<'_>) -> Result<(gpu::Texture<'a>, gpu::Allocation<'a, u8>)> {
+    let (width, height, alloc) = load_image(path, gpu)?;
+    create_texture(gpu, (width, height), alloc, gpu::Format::RGBA8UNorm, cmd_buf)
 }
 
 pub struct Application<'a> {
@@ -260,6 +264,8 @@ pub struct Application<'a> {
     model: gpu::Allocation<'a, Vertex>,
     materials: gpu::Allocation<'a, Material>,
     material_textures: Vec<gpu::Texture<'a>>,
+
+    gltf: gltf::Model<'a>,
 
     keys: HashMap<PhysicalKey, bool>,
     camera_pos: Vec3,
@@ -287,8 +293,6 @@ impl<'a> Application<'a> {
             ..Default::default()
         }, &mut sampler_descriptors[0])?;
 
-        let gltf = gltf::load_gltf("models/Sponza_gltf/glTF/Sponza.gltf", gpu)?;
-
         let (materials, texture_paths, mat_by_name) = load_materials(
             "models/Sponza/sponza.mtl", gpu, 1)?;
         let model = load_obj_cached(
@@ -315,6 +319,10 @@ impl<'a> Application<'a> {
         drop(tex_alloc);
         drop(material_tex_allocations);
 
+        let gltf = gltf::load_gltf(
+            "models/Sponza_gltf/glTF/Sponza.gltf", gpu,
+            &mut tex_descriptors, material_textures.len() as u16 + 3)?;
+
         Ok(Self {
             gpu,
             vertex_shader: gpu.create_shader(include_bytes!("../shaders/vert.spv"), gpu::ShaderStage::Vertex)?,
@@ -334,6 +342,8 @@ impl<'a> Application<'a> {
             model,
             materials,
             material_textures,
+
+            gltf,
 
             keys: HashMap::new(),
             camera_pos: Vec3::new(0.0, 0.0, 0.0),
@@ -357,10 +367,6 @@ impl<'a> Application<'a> {
 
     fn get_frame_arena(&self) -> &gpu::Arena<'_> {
         &self.frame_arenas[(self.next_frame % FRAMES_IN_FLIGHT) as usize]
-    }
-
-    const fn pack_tex_vertex(u: f32, v: f32, tex: u16) -> u32 {
-        ((tex as u32) << 20) | (((v * 512.0) as u32 & ((1 << 10) - 1)) << 10) | ((u * 512.0) as u32 & ((1 << 10) - 1))
     }
 
     fn get_key(&self, code: KeyCode) -> bool {
@@ -427,8 +433,8 @@ impl<'a> Application<'a> {
         );
         let mat_flip = Mat4::from_scale(Vec3::new(1.0, -1.0, 1.0));
         let mat_view = self.get_view_matrix();
-        let mat_model = Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0))
-             * Mat4::from_scale(Vec3::splat(0.01));
+        let mat_model = Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0));
+             // * Mat4::from_scale(Vec3::splat(0.01));
         let mat_mvp = mat_perspective * mat_flip * mat_view * mat_model;
 
         const { assert!(size_of::<Vertex>() == 32) };
@@ -438,8 +444,10 @@ impl<'a> Application<'a> {
         struct VertexData(Mat4, gpu::DevicePointer, gpu::DevicePointer);
         let vertex_data = arena.alloc_data(&[VertexData(
             mat_mvp,
-            self.model.device(),
-            self.materials.device(),
+            // self.model.device(),
+            // self.materials.device(),
+            self.gltf.scenes[0].vertices.device(),
+            self.gltf.scenes[0].materials.device(),
         )])?;
 
         #[repr(C)]
@@ -479,9 +487,13 @@ impl<'a> Application<'a> {
              None,
              Some(&self.sampler_descriptors),
          );
-        command_buffer.draw_instanced(
+        // command_buffer.draw_instanced(
+        //     vertex_data.device(), pixel_data.device(),
+        //     self.model.len() as u32, 1, 0, 0);
+        let indices = &self.gltf.scenes[0].indices;
+        command_buffer.draw_indexed(
             vertex_data.device(), pixel_data.device(),
-            self.model.len() as u32, 1, 0, 0);
+            indices.device(), indices.len() as u32, gpu::IndexType::U32);
         command_buffer.end_render_pass();
 
         command_buffer.end_recording()?;

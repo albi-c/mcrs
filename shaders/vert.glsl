@@ -24,7 +24,7 @@ struct Material {
     uint texDiffuseDisp;
 
     // (? << 24) | (b << 16) | (g << 8) | r
-    uint ambient;
+    uint ambientAndIntensity;
     uint diffuseAndDissolve;
     uint specularAndExp;
 };
@@ -53,14 +53,15 @@ void main() {
 
     Vertex vertex = d.vertices.data[gl_VertexIndex];
     gl_Position = d.mvp * vec4(vertex.x, vertex.y, vertex.z, 1.0);
-    outUv = vec2(vertex.uv.x, 1.0 - vertex.uv.y);
+//    outUv = vec2(vertex.uv.x, 1.0 - vertex.uv.y);
+    outUv = vertex.uv;
     vec2 n = vertex.nxy;
     vec3 normal = vec3(n, sqrt(max(1.0 - n.x*n.x - n.y*n.y, 0.0)));
     outNormal = normal;
     outFlatNormal = normal;
 
     Material material = d.materials.data[vertex.mat & ~(1 << 31)];
-    outMat = uvec4(material.texDiffuseDisp, material.ambient, material.diffuseAndDissolve, material.specularAndExp);
+    outMat = uvec4(material.texDiffuseDisp, material.ambientAndIntensity, material.diffuseAndDissolve, material.specularAndExp);
     outUseFlatNormal = (vertex.mat & (1 << 31)) >> 31;
 
 //    uint tex = vertex.tex;
