@@ -7,6 +7,7 @@ layout(location = 1) in vec3 inNormal;
 layout(location = 2) flat in uvec4 inMat;
 layout(location = 3) flat in vec3 inFlatNormal;
 layout(location = 4) flat in uint inUseFlatNormal;
+layout(location = 5) in vec3 inWorldPos;
 
 layout(location = 0) out vec4 outColor;
 
@@ -15,7 +16,7 @@ layout(set = 1, binding = 0) uniform writeonly image2D textures_rw[];
 layout(set = 2, binding = 0) uniform sampler samplers[];
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer FragData {
-    vec4 sunDirection;
+    vec4 sunPos;
     vec4 lookDirection;
 };
 
@@ -59,7 +60,8 @@ void main() {
     float specularExp = specularAndExp.a;
 
     vec3 normal = (inUseFlatNormal == 0) ? inNormal : inFlatNormal;
-    float intensityDiffuse = max(0.0, dot(normal, -data.frag.sunDirection.xyz)) * 0.6;
+    vec3 sunDirection = normalize(data.frag.sunPos.xyz - inWorldPos);
+    float intensityDiffuse = max(0.0, dot(normal, sunDirection)) * 0.6;
 
     outColor = vec4(sampleDiffuse.rgb * (ambient * intensityAmbient + diffuse * intensityDiffuse), 1.0);
 //    outColor = vec4(normal, 1.0);

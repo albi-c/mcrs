@@ -7,6 +7,7 @@ layout(location = 1) out vec3 outNormal;
 layout(location = 2) flat out uvec4 outMat;
 layout(location = 3) flat out vec3 outFlatNormal;
 layout(location = 4) flat out uint outUseFlatNormal;
+layout(location = 5) out vec3 outWorldPos;
 
 struct Vertex {
     float x;
@@ -52,10 +53,13 @@ void main() {
     VertData d = data.vert;
 
     Vertex vertex = d.vertices.data[gl_VertexIndex];
-    gl_Position = d.mvp * vec4(vertex.x, vertex.y, vertex.z, 1.0);
+    vec4 position = d.mvp * vec4(vertex.x, vertex.y, vertex.z, 1.0);
+    gl_Position = position;
+    outWorldPos = position.xyz;
 //    outUv = vec2(vertex.uv.x, 1.0 - vertex.uv.y);
     outUv = vertex.uv;
     vec2 n = vertex.nxy;
+    // TODO: multiply by inverse of model matrix if doing non uniform transforms
     vec3 normal = vec3(n, sqrt(max(1.0 - n.x*n.x - n.y*n.y, 0.0)));
     outNormal = normal;
     outFlatNormal = normal;

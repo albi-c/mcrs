@@ -6,7 +6,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use anyhow::{anyhow, Result};
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec2, Vec3, Vec3A, Vec3Swizzles, Vec4};
+use glam::{Mat3, Mat4, Vec2, Vec3, Vec3A, Vec3Swizzles, Vec4};
 use image::{EncodableLayout, ImageReader};
 use winit::event::ElementState;
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -454,7 +454,7 @@ impl<'a> Application<'a> {
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
         struct PixelData(Vec3A, Vec3A);
         let pixel_data = arena.alloc_data(&[PixelData(
-            Vec3A::new(0.0, -1.0, 1.0).normalize(),
+            Vec3A::new(200.0, 1000.0, 200.0),
             self.camera_front.to_vec3a(),
         )])?;
 
