@@ -196,18 +196,12 @@ fn hash(value: impl Hash) -> u64 {
     hasher.finish()
 }
 
-fn hash2(value: impl Hash) -> u128 {
-    let mut hasher1 = std::hash::DefaultHasher::new();
-    let mut hasher2 = std::hash::DefaultHasher::new();
-    value.hash(&mut hasher1);
-    value.hash(&mut hasher2);
-    let hash = hasher1.finish();
-    hash.hash(&mut hasher2);
-    ((hash as u128) << 64) | hasher2.finish() as u128
-}
-
 fn load_image(path: impl AsRef<Path>, gpu: &gpu::Gpu) -> Result<(u32, u32, gpu::Allocation<'_, u8>)> {
-    let cache_path = format!("image_cache/{:032x}", hash2(path.as_ref()));
+    let cache_path = format!(
+        "image_cache/{:016x}_{}", hash(path.as_ref()),
+        path.as_ref().file_name()
+            .expect("path has no file name").to_str()
+            .expect("unable to convert path to string"));
     if fs::exists(&cache_path)? {
         let mut file = fs::File::open(cache_path)?;
         let mut header = [0u32; 2];

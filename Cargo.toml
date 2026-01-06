@@ -9,7 +9,6 @@ members = ["gpu"]
 
 [workspace.dependencies]
 bytemuck = "1.24.0"
-bytemuck_derive = "1.10.2"
 vulkanalia = "0.34.0"
 anyhow = "1.0.100"
 log = "0.4.29"
@@ -28,5 +27,4 @@ bytemuck = { workspace = true }
 image = "0.25.9"
 lz4 = "1.28.1"
 tobj = "4.0.3"
-mesh-loader = "0.1.13"
 gltf = { version = "1.4.1", features = ["names"] }
