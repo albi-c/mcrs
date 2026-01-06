@@ -11,6 +11,7 @@ use image::{EncodableLayout, ImageReader};
 use winit::event::ElementState;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use gpu::{CommandBuffer, MemoryAllocation, MemoryAllocator};
+use crate::gltf::load_gltf;
 use crate::obj;
 
 const FRAMES_IN_FLIGHT: u64 = 2;
@@ -287,6 +288,8 @@ impl<'a> Application<'a> {
             ..Default::default()
         }, &mut sampler_descriptors[0])?;
 
+        // let gltf = load_gltf("models/Sponza_gltf/glTF/sponza.gltf")?;
+
         let (materials, texture_paths, mat_by_name) = load_materials(
             "models/Sponza/sponza.mtl", gpu, 1)?;
         let model = load_obj_cached(
@@ -464,6 +467,7 @@ impl<'a> Application<'a> {
             ..Default::default()
         };
         let render_pass_desc = gpu::RenderPassDesc {
+            cull: gpu::Cull::CW,
             depth_test_state: Some(&depth_test_desc),
             color_targets: &[swapchain_target],
             depth_target: Some(&depth_target),

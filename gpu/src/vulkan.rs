@@ -5,7 +5,7 @@ use std::ffi::{c_void, CStr};
 use anyhow::{anyhow, Result};
 use vulkanalia::{vk, Device, Instance};
 use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, HasBuilder, InstanceV1_0, InstanceV1_1, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
-use crate::{need_portability_ext, validation_enabled, Gpu, Queue, Shader, ShaderStage, VALIDATION_LAYER};
+use crate::{need_portability_ext, validation_enabled, Cull, Gpu, Queue, Shader, ShaderStage, VALIDATION_LAYER};
 
 const FEATURE_REQUIREMENTS: &[(fn(&vk::PhysicalDeviceFeatures) -> vk::Bool32, &str)] = &[
     (|f| f.shader_int64, "shader int64"),
@@ -583,34 +583,23 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
     Ok(device)
 }
 
-// fn get_topology(topology: Topology) -> vk::PrimitiveTopology {
-//     match topology {
-//         Topology::PointList => vk::PrimitiveTopology::POINT_LIST,
-//         Topology::LineList => vk::PrimitiveTopology::LINE_LIST,
-//         Topology::LineStrip => vk::PrimitiveTopology::LINE_STRIP,
-//         Topology::TriangleList => vk::PrimitiveTopology::TRIANGLE_LIST,
-//         Topology::TriangleStrip => vk::PrimitiveTopology::TRIANGLE_STRIP,
-//         Topology::TriangleFan => vk::PrimitiveTopology::TRIANGLE_FAN,
-//     }
-// }
-//
-// fn get_cull_mode(cull: Cull) -> vk::CullModeFlags {
-//     match cull {
-//         Cull::None => vk::CullModeFlags::NONE,
-//         Cull::CCW => vk::CullModeFlags::BACK,
-//         Cull::CW => vk::CullModeFlags::BACK,
-//         Cull::All => vk::CullModeFlags::FRONT_AND_BACK,
-//     }
-// }
-//
-// fn get_front_face(cull: Cull) -> vk::FrontFace {
-//     match cull {
-//         Cull::None => vk::FrontFace::CLOCKWISE,
-//         Cull::CCW => vk::FrontFace::CLOCKWISE,
-//         Cull::CW => vk::FrontFace::COUNTER_CLOCKWISE,
-//         Cull::All => vk::FrontFace::CLOCKWISE,
-//     }
-// }
+pub fn get_cull_mode(cull: Cull) -> vk::CullModeFlags {
+    match cull {
+        Cull::None => vk::CullModeFlags::NONE,
+        Cull::CCW => vk::CullModeFlags::BACK,
+        Cull::CW => vk::CullModeFlags::BACK,
+        Cull::All => vk::CullModeFlags::FRONT_AND_BACK,
+    }
+}
+
+pub fn get_front_face(cull: Cull) -> vk::FrontFace {
+    match cull {
+        Cull::None => vk::FrontFace::CLOCKWISE,
+        Cull::CCW => vk::FrontFace::CLOCKWISE,
+        Cull::CW => vk::FrontFace::COUNTER_CLOCKWISE,
+        Cull::All => vk::FrontFace::CLOCKWISE,
+    }
+}
 
 pub fn get_sample_count_flag(count: u8) -> vk::SampleCountFlags {
     match count {

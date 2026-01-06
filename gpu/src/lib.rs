@@ -19,7 +19,7 @@ use vulkanalia::{vk, Device, Instance, Version};
 use vulkanalia::vk::{DeviceV1_0, ExtDescriptorBufferExtensionDeviceCommands, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrBufferDeviceAddressExtensionDeviceCommands, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrSynchronization2ExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
 use vulkanalia_vma as vma;
 use vulkanalia_vma::Alloc;
-use crate::vulkan::{create_logical_device, create_semaphore, create_shader, create_swapchain, find_suitable_device, get_sample_count_flag, CommandBufferPool, DescriptorSizes, PipelineLayout, PooledCommandBuffer, QueueFamilies, Queues, Swapchain};
+use crate::vulkan::{create_logical_device, create_semaphore, create_shader, create_swapchain, find_suitable_device, get_cull_mode, get_front_face, get_sample_count_flag, CommandBufferPool, DescriptorSizes, PipelineLayout, PooledCommandBuffer, QueueFamilies, Queues, Swapchain};
 
 pub use vulkan::create_debug_info_callback;
 pub use crate::arena::Arena;
@@ -1123,8 +1123,8 @@ impl<'a> CommandBuffer<'a> {
             dev.cmd_set_sample_mask_ext(self.buffer, vk::SampleCountFlags::_1, Some(&1));
             dev.cmd_set_alpha_to_coverage_enable_ext(self.buffer, false);
             dev.cmd_set_polygon_mode_ext(self.buffer, vk::PolygonMode::FILL);
-            dev.cmd_set_cull_mode_ext(self.buffer, vk::CullModeFlags::NONE);
-            dev.cmd_set_front_face_ext(self.buffer, vk::FrontFace::CLOCKWISE);
+            dev.cmd_set_cull_mode_ext(self.buffer, get_cull_mode(desc.cull));
+            dev.cmd_set_front_face_ext(self.buffer, get_front_face(desc.cull));
         }
     }
     pub fn end_render_pass(&mut self) {
