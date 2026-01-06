@@ -62,7 +62,6 @@ fn load_materials<'a, 'b>(material_iter: impl IntoIterator<Item = (&'b easy_gltf
     let mut materials = gpu.alloc::<Material>(count)?;
     for (material, index) in material_iter.into_iter().sorted_unstable_by_key(|(_, i)| *i) {
         // TODO: emissive
-        // TODO: pbr textures
         let pbr = &material.pbr;
 
         let tex_diffuse = pbr.base_color_texture.as_ref().ok_or_else(|| anyhow!("material missing color texture"))?;
@@ -105,16 +104,27 @@ fn load_materials<'a, 'b>(material_iter: impl IntoIterator<Item = (&'b easy_gltf
             0
         };
 
-        let mut ambient_and_intensity = convert_vec!(4 pbr.base_color_factor);
-        ambient_and_intensity.w = 0.0;
+        let tex_roughness = if let Some(tex) = &pbr.roughness_texture {
+            let (tex_roughness, tex) = add_texture(
+                gpu, gpu::Format::R8UNorm, tex.width(), tex.height(),
+                tex.as_bytes(), &mut cmd_buf, tex_descriptors, tex_offset)?;
+            textures.push(tex);
+            tex_roughness - tex_diffuse
+        } else {
+            0
+        };
+
+        let mut diffuse_and_normal = convert_vec!(4 pbr.base_color_factor);
+        diffuse_and_normal.w = normal_factor;
 
         let mat = Material {
-            tex_offsets: Material::pack_tex_offsets(tex_normal, tex_metallic, 0),
+            tex_offsets: Material::pack_tex_offsets(tex_normal, tex_metallic, tex_roughness),
             tex_diffuse,
 
-            ambient_and_intensity: Material::pack_vec4(ambient_and_intensity),
-            diffuse_and_normal: Material::pack_vec4(Vec4::new(1.0, 1.0, 1.0, normal_factor)),
-            // specular is not used
+            // ambient is unused
+            ambient_and_roughness: Material::pack_vec4(Vec4::new(0.0, 0.0, 0.0, pbr.roughness_factor)),
+            diffuse_and_normal: Material::pack_vec4(diffuse_and_normal),
+            // specular is unused
             specular_and_exp: Material::pack_vec4(Vec4::new(0.0, 0.0, 0.0, pbr.metallic_factor)),
         };
         materials.host_mut()[index as usize] = mat;

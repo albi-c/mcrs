@@ -26,7 +26,7 @@ pub struct Material {
     pub tex_offsets: u16,
     pub tex_diffuse: u16,
 
-    pub ambient_and_intensity: u32,
+    pub ambient_and_roughness: u32,
     pub diffuse_and_normal: u32,
     pub specular_and_exp: u32,
 }
@@ -157,8 +157,8 @@ impl<'a> Application<'a> {
 
         Ok(Self {
             gpu,
-            vertex_shader: gpu.create_shader(include_bytes!("../shaders/vert.spv"), gpu::ShaderStage::Vertex)?,
-            pixel_shader: gpu.create_shader(include_bytes!("../shaders/frag.spv"), gpu::ShaderStage::Pixel)?,
+            vertex_shader: gpu.create_shader(&fs::read("shaders/vert.spv")?, gpu::ShaderStage::Vertex)?,
+            pixel_shader: gpu.create_shader(&fs::read("shaders/frag.spv")?, gpu::ShaderStage::Pixel)?,
             queue,
             frame_semaphore: gpu.create_semaphore(0)?,
             frame_arenas: (0..FRAMES_IN_FLIGHT)
@@ -262,7 +262,8 @@ impl<'a> Application<'a> {
         );
         let mat_flip = Mat4::from_scale(Vec3::new(1.0, -1.0, 1.0));
         let mat_view = self.get_view_matrix();
-        let mat_model = Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0));
+        let mat_model = Mat4::default();
+        // let mat_model = Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0));
              // * Mat4::from_scale(Vec3::splat(0.01));
         let mat_mvp = mat_perspective * mat_flip * mat_view * mat_model;
 
@@ -270,11 +271,10 @@ impl<'a> Application<'a> {
 
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-        struct VertexData(Mat4, gpu::DevicePointer, gpu::DevicePointer);
+        struct VertexData(Mat4, Mat4, gpu::DevicePointer, gpu::DevicePointer);
         let vertex_data = arena.alloc_data(&[VertexData(
             mat_mvp,
-            // self.model.device(),
-            // self.materials.device(),
+            mat_model,
             self.gltf.scenes[0].vertices.device(),
             self.gltf.scenes[0].materials.device(),
         )])?;
@@ -283,8 +283,9 @@ impl<'a> Application<'a> {
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
         struct PixelData(Vec3A, Vec3A);
         let pixel_data = arena.alloc_data(&[PixelData(
-            Vec3A::new(200.0, 1000.0, 200.0),
-            self.camera_front.to_vec3a(),
+            // Vec3A::new(200.0, 1000.0, 200.0),
+            Vec3A::new(0.0, 100.0, 0.0),
+            self.camera_pos.to_vec3a(),
         )])?;
 
         let mut command_buffer = self.queue.create_buffer()?;
@@ -314,9 +315,6 @@ impl<'a> Application<'a> {
              None,
              Some(&self.sampler_descriptors),
          );
-        // command_buffer.draw_instanced(
-        //     vertex_data.device(), pixel_data.device(),
-        //     self.model.len() as u32, 1, 0, 0);
         let indices = &self.gltf.scenes[0].indices;
         command_buffer.draw_indexed(
             vertex_data.device(), pixel_data.device(),

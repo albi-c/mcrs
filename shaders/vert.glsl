@@ -27,7 +27,7 @@ struct Material {
     uint texDiffuseOffsets;
 
     // (? << 24) | (b << 16) | (g << 8) | r
-    uint ambientAndIntensity;
+    uint ambientAndRoughness;
     uint diffuseAndNormal;
     uint specularAndExp;
 };
@@ -42,6 +42,7 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Ver
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer VertData {
     mat4 mvp;
+    mat4 model;
     VertDataVertices vertices;
     VertDataMaterials materials;
 };
@@ -55,14 +56,15 @@ void main() {
     VertData d = data.vert;
 
     Vertex vertex = d.vertices.data[gl_VertexIndex];
-    vec4 position = d.mvp * vec4(vertex.x, vertex.y, vertex.z, 1.0);
+    vec4 vertexPos = vec4(vertex.x, vertex.y, vertex.z, 1.0);
+    vec4 position = d.mvp * vertexPos;
     gl_Position = position;
-    outWorldPos = position.xyz;
+    outWorldPos = (d.model * vertexPos).xyz;
     outUv = vertex.uv;
     // TODO: multiply by inverse of model matrix if doing non uniform transforms
     vec3 normal = vec3(float(vertex.nx), float(vertex.ny), float(vertex.nz));
     outNormal = normal;
 
     Material material = d.materials.data[vertex.mat];
-    outMat = uvec4(material.texDiffuseOffsets, material.ambientAndIntensity, material.diffuseAndNormal, material.specularAndExp);
+    outMat = uvec4(material.texDiffuseOffsets, material.ambientAndRoughness, material.diffuseAndNormal, material.specularAndExp);
 }

@@ -15,7 +15,7 @@ layout(set = 2, binding = 0) uniform sampler samplers[];
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer FragData {
     vec4 sunPos;
-    vec4 lookDirection;
+    vec4 viewPos;
 };
 
 layout(std430, push_constant) uniform Data {
@@ -45,29 +45,36 @@ void main() {
         discard;
     }
     vec3 sampleDisp = texDisp == texDiffuse ? vec3(0.0, 0.0, 1.0) : texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv).rgb;
-    float sampleMetallic = texMetallic == texDiffuse ? 0.0 : texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv).r;
+    float sampleMetallic = texMetallic == texDiffuse ? 1.0 : texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv).r;
+    float sampleRoughness = texRoughness == texDiffuse ? 1.0 : texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv).r;
 
-    vec4 ambientAndIntensity = readPacked(inMat.y);
-    vec3 ambient = ambientAndIntensity.rgb;
-    float intensityAmbient = max(ambientAndIntensity.a, 0.2);
+    vec4 ambientAndRoughness = readPacked(inMat.y);
+    // ambient is unused
+//    float ambient = ambientAndRoughness.rgb;
+    float roughness = ambientAndRoughness.a * sampleRoughness;
+
+    float intensityAmbient = 0.2;
 
     vec4 diffuseAndNormal = readPacked(inMat.z);
     vec3 diffuse = diffuseAndNormal.rgb;
     float normalFactor = diffuseAndNormal.a;
 
     vec4 specularAndExp = readPacked(inMat.w);
-    vec3 specular = specularAndExp.rgb;
-    // TODO: multiply by metallic sample
-    float specularExp = specularAndExp.a;
+    // specular is unused
+//    vec3 specular = specularAndExp.rgb;
+    float specularExp = specularAndExp.a * sampleMetallic;
 
     vec3 normal = inNormal;
     vec3 sunDirection = normalize(data.frag.sunPos.xyz - inWorldPos);
     float intensityDiffuse = max(0.0, dot(normal, sunDirection)) * 0.6;
+    vec3 lookDirection = normalize(data.frag.viewPos.xyz - inWorldPos);
+    vec3 halfwayDirection = normalize(sunDirection + lookDirection);
+    float intensitySpecular = pow(max(dot(normal, halfwayDirection), 0.0), specularExp * 80.0) * 0.6;
 
-//    outColor = vec4(sampleDiffuse.rgb * (ambient * intensityAmbient + diffuse * intensityDiffuse), 1.0);
-//    outColor = sampleDiffuse;
-    outColor = vec4(sampleDisp.xy, 1.0, 1.0);
-//    outColor = vec4(sampleMetallic * specularExp, 0.0, 0.0, 1.0);
+    outColor = vec4(sampleDiffuse.rgb * diffuse * (intensityAmbient + intensityDiffuse) + intensitySpecular, 1.0);
+//    outColor = vec4(reflectDirection, 1.0);
+//    outColor = vec4(specularExp == roughness ? 0.0 : 1.0, 0.0, 0.0, 1.0);
+//    outColor = vec4(specularExp, sampleMetallic, 0.0, 1.0);
 
 //    outColor = vec4(normal, 1.0);
 }
