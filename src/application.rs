@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::hash::{Hash, Hasher};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use anyhow::{anyhow, Result};
 use bytemuck::{Pod, Zeroable};
@@ -189,22 +190,63 @@ impl Material {
     }
 }
 
+fn hash(value: impl Hash) -> u64 {
+    let mut hasher = std::hash::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn hash2(value: impl Hash) -> u128 {
+    let mut hasher1 = std::hash::DefaultHasher::new();
+    let mut hasher2 = std::hash::DefaultHasher::new();
+    value.hash(&mut hasher1);
+    value.hash(&mut hasher2);
+    let hash = hasher1.finish();
+    hash.hash(&mut hasher2);
+    ((hash as u128) << 64) | hasher2.finish() as u128
+}
+
+fn load_image(path: impl AsRef<Path>, gpu: &gpu::Gpu) -> Result<(u32, u32, gpu::Allocation<'_, u8>)> {
+    let cache_path = format!("image_cache/{:032x}", hash2(path.as_ref()));
+    if fs::exists(&cache_path)? {
+        let mut file = fs::File::open(cache_path)?;
+        let mut header = [0u32; 2];
+        file.read_exact(bytemuck::cast_slice_mut(&mut header))?;
+        let width = header[0];
+        let height = header[1];
+        let mut decoder = lz4::Decoder::new(file)?;
+        let length = width as usize * height as usize * 4;
+        let mut alloc = gpu.alloc::<u8>(length)?;
+        decoder.read_exact(bytemuck::cast_slice_mut(alloc.host_mut()))?;
+        Ok((width, height, alloc))
+    } else {
+        let img = ImageReader::open(path)?
+            .with_guessed_format()?.decode()?.into_rgba8();
+        let width = img.width();
+        let height = img.height();
+        let alloc = gpu.allocator().alloc_data(img.as_bytes())?;
+        let mut file = fs::File::create(cache_path)?;
+        file.write_all(bytemuck::cast_slice(&[width, height]))?;
+        let mut encoder = lz4::EncoderBuilder::new().level(9).build(file)?;
+        encoder.write_all(img.as_bytes())?;
+        Ok((img.width(), img.height(), alloc))
+    }
+}
+
 fn load_texture<'a>(path: impl AsRef<Path>, gpu: &'a gpu::Gpu,
                     cmd_buf: &mut CommandBuffer<'_>) -> Result<(gpu::Texture<'a>, gpu::Allocation<'a, u8>)> {
-    let img = ImageReader::open(path)?
-        .with_guessed_format()?.decode()?.into_rgba8();
-    let img_alloc = gpu.allocator().alloc_data(img.as_bytes())?;
+    let (width, height, alloc) = load_image(path, gpu)?;
 
     let tex = gpu.create_texture(gpu::TextureDesc {
         ty: gpu::TextureType::Tex2D,
-        dimensions: (img.width(), img.height(), 1),
+        dimensions: (width, height, 1),
         format: gpu::Format::RGBA8UNorm,
         usage: gpu::TextureUsageFlags::Sampled,
         ..Default::default()
     }, cmd_buf)?;
-    cmd_buf.copy_to_texture(img_alloc.device(), &tex);
+    cmd_buf.copy_to_texture(alloc.device(), &tex);
 
-    Ok((tex, img_alloc))
+    Ok((tex, alloc))
 }
 
 pub struct Application<'a> {

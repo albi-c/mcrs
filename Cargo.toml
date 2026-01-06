@@ -26,6 +26,7 @@ pretty_env_logger = { workspace = true }
 glam = { workspace = true }
 bytemuck = { workspace = true }
 image = "0.25.9"
+lz4 = "1.28.1"
 tobj = "4.0.3"
 mesh-loader = "0.1.13"
 gltf = { version = "1.4.1", features = ["names"] }
