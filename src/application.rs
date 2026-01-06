@@ -2,179 +2,32 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
 use std::path::Path;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat3, Mat4, Vec2, Vec3, Vec3A, Vec3Swizzles, Vec4};
+use glam::{Mat4, Vec2, Vec3, Vec3A, Vec4};
+use half::f16;
 use image::{EncodableLayout, ImageReader};
 use winit::event::ElementState;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use gpu::{MemoryAllocation, MemoryAllocator};
-use crate::{gltf, obj};
+use crate::gltf;
 
 const FRAMES_IN_FLIGHT: u64 = 2;
 
-fn load_obj<C>(path: impl AsRef<Path> + Debug,
-               get_material: impl Fn(&str) -> Option<u32>,
-               push_vertex: impl Fn(&mut C, usize, Vec3, Vec2, Vec3, u32),
-               make_vertex_container: impl FnOnce(usize) -> Result<C>) -> Result<C> {
-    let model = obj::Model::read(
-        path, |mat| get_material(mat).ok_or_else(|| anyhow!("invalid material id: {}", mat)))?;
-
-    let mut length = 0;
-    for obj in &model.objects {
-        length += 3 * obj.faces.len();
-    }
-
-    let mut vertices = make_vertex_container(length)?;
-    let mut index = 0;
-    for obj in model.objects {
-        for face in obj.faces {
-            for vertex in face {
-                push_vertex(
-                    &mut vertices,
-                    index,
-                    model.vertices[vertex.vertex as usize],
-                    model.tex_coords[vertex.tex_coord as usize],
-                    model.normals[vertex.normal as usize],
-                    vertex.material,
-                );
-                index += 1;
-            }
-        }
-    }
-
-    assert_eq!(index, length);
-
-    Ok(vertices)
-
-    // let (models, _) = tobj::load_obj(path, &tobj::LoadOptions {
-    //     triangulate: true,
-    //     ..Default::default()
-    // })?;
-    //
-    // let mut length = 0;
-    // for model in &models {
-    //     length += model.mesh.indices.len();
-    //     assert_eq!(model.mesh.indices.len(), model.mesh.texcoord_indices.len());
-    //     assert_eq!(model.mesh.indices.len(), model.mesh.normal_indices.len());
-    // }
-    //
-    // let mut vertices = make_vertex_container(length)?;
-    // let mut index = 0;
-    // for model in models {
-    //     let mesh = model.mesh;
-    //     let material = u32::try_from(mesh.material_id.unwrap_or(0))?;
-    //     for (i_p, (i_t, i_n)) in mesh.indices.into_iter()
-    //         .zip(mesh.texcoord_indices.into_iter().zip(mesh.normal_indices.into_iter())) {
-    //         let b_p = i_p as usize * 3;
-    //         let b_t = i_t as usize * 2;
-    //         let b_n = i_n as usize * 3;
-    //         push_vertex(
-    //             &mut vertices,
-    //             index,
-    //             Vec3::new(
-    //                 mesh.positions[b_p + 0],
-    //                 mesh.positions[b_p + 1],
-    //                 mesh.positions[b_p + 2],
-    //             ),
-    //             Vec2::new(
-    //                 mesh.texcoords[b_t + 0],
-    //                 mesh.texcoords[b_t + 1],
-    //             ),
-    //             Vec3::new(
-    //                 mesh.normals[b_n + 0],
-    //                 mesh.normals[b_n + 1],
-    //                 mesh.normals[b_n + 2],
-    //             ),
-    //             material,
-    //         );
-    //         index += 1;
-    //         assert!(index <= length);
-    //     }
-    // }
-    //
-    // Ok(vertices)
-}
-
-fn load_obj_cached<V: Pod, C>(path: &str, cache_path: impl AsRef<Path>,
-                              get_material: impl Fn(&str) -> Option<u32>,
-                              make_vertex: impl Fn(Vec3, Vec2, Vec3, u32) -> V,
-                              make_vertex_container: impl FnOnce(usize) -> Result<C>,
-                              vertex_container_slice: impl Fn(&mut C) -> &mut [V]) -> Result<C> {
-    if fs::exists(&cache_path)? {
-        let mut file = fs::File::open(cache_path)?;
-        let length_bytes = file.seek(SeekFrom::End(0))? as usize;
-        file.seek(SeekFrom::Start(0))?;
-        let count = length_bytes / size_of::<V>();
-        let mut container = make_vertex_container(count)?;
-        let slice = vertex_container_slice(&mut container);
-        assert_eq!(slice.len(), count);
-        file.read_exact(bytemuck::cast_slice_mut(slice))?;
-        Ok(container)
-    } else {
-        let mut container = load_obj(
-            path,
-            get_material,
-            |container, index, pos, uv, nor, mat| {
-                vertex_container_slice(container)[index] = make_vertex(pos, uv, nor, mat);
-            },
-            make_vertex_container,
-        )?;
-        let slice = vertex_container_slice(&mut container);
-        fs::write(cache_path, bytemuck::cast_slice(slice))?;
-        Ok(container)
-    }
-}
-
-fn load_materials(path: impl AsRef<Path> + Debug, gpu: &gpu::Gpu,
-                  texture_offset: u16) -> Result<(gpu::Allocation<'_, Material>, Vec<String>,
-                                                  impl Fn(&str) -> Option<u32>)> {
-    let (materials, by_name) = tobj::load_mtl(path)?;
-
-    let mut allocation = gpu.alloc::<Material>(materials.len())?;
-    let mem = allocation.host_mut();
-    let mut texture_paths = vec![];
-
-    for (i, material) in materials.into_iter().enumerate() {
-        assert_eq!(material.ambient_texture, material.diffuse_texture);
-        let mat = &mut mem[i];
-        if let Some(disp) = material.normal_texture {
-            mat.tex_disp = texture_offset + u16::try_from(texture_paths.len())?;
-            texture_paths.push(disp);
-        }
-        if let Some(diff) = material.diffuse_texture {
-            mat.tex_diffuse = texture_offset + u16::try_from(texture_paths.len())?;
-            texture_paths.push(diff);
-        }
-        let [r, g, b] = material.ambient.unwrap_or_default();
-        mat.ambient_and_intensity = Material::pack_vec4(Vec4::new(r, g, b, 0.0));
-        let [r, g, b] = material.diffuse.unwrap_or_default();
-        mat.diffuse_and_dissolve = Material::pack_vec4(
-            Vec4::new(r, g, b, material.dissolve.unwrap_or_default()));
-        let [r, g, b] = material.specular.unwrap_or_default();
-        mat.specular_and_exp = Material::pack_vec4
-            (Vec4::new(r, g, b, material.shininess.unwrap_or_default()));
-    }
-
-    Ok((allocation, texture_paths, move |name: &str| {
-        by_name.get(name).map(|&index| index as u32)
-    }))
-}
-
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-pub struct Vertex(pub Vec3, pub u32, pub Vec2, pub Vec2);
+pub struct Vertex(pub Vec3, pub u32, pub Vec2, pub [f16; 4]);
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct Material {
-    pub tex_disp: u16,
+    pub tex_offsets: u16,
     pub tex_diffuse: u16,
 
     pub ambient_and_intensity: u32,
-    pub diffuse_and_dissolve: u32,
+    pub diffuse_and_normal: u32,
     pub specular_and_exp: u32,
 }
 
@@ -187,6 +40,13 @@ impl Material {
             vec.z as u8,
             vec.w as u8,
         ])
+    }
+
+    pub fn pack_tex_offsets(normal: u16, metallic: u16, roughness: u16) -> u16 {
+        assert!(normal < 16, "normal texture offset out of range: {normal}");
+        assert!(metallic < 16, "metallic texture offset out of range: {metallic}");
+        assert!(roughness < 16, "roughness texture offset out of range: {roughness}");
+        (roughness << 8) | (metallic << 4) | normal
     }
 }
 
@@ -262,9 +122,6 @@ pub struct Application<'a> {
     depth_buffer: gpu::Texture<'a>,
     tex_descriptors: gpu::DescriptorHeap<'a>,
     sampler_descriptors: gpu::DescriptorHeap<'a>,
-    model: gpu::Allocation<'a, Vertex>,
-    materials: gpu::Allocation<'a, Material>,
-    material_textures: Vec<gpu::Texture<'a>>,
 
     gltf: gltf::Model<'a>,
 
@@ -292,27 +149,11 @@ impl<'a> Application<'a> {
             ..Default::default()
         }, &mut sampler_descriptors[0])?;
 
-        let (materials, texture_paths, mat_by_name) = load_materials(
-            "models/Sponza/sponza.mtl", gpu, 1)?;
-        let model = load_obj_cached(
-            "models/Sponza/sponza.obj", "models/sponza.cache",
-            mat_by_name,
-            |pos, uv, normal, mat| Vertex(pos, mat, uv, normal.normalize().xy()),
-            |n| gpu.alloc::<Vertex>(n),
-            |container| container.host_mut())?;
-
-        let mut material_textures = Vec::with_capacity(texture_paths.len());
-        for (i, texture_path) in texture_paths.into_iter().enumerate() {
-            let tex = load_texture("models/Sponza/".to_owned() + &texture_path, gpu, &mut command_buffer)?;
-            tex.view_descriptor(&mut tex_descriptors[i + 1])?;
-            material_textures.push(tex);
-        }
-
         queue.submit_no_signal(command_buffer)?.wait();
 
         let gltf = gltf::load_gltf(
             "models/Sponza_gltf/glTF/Sponza.gltf", gpu,
-            &mut tex_descriptors, material_textures.len() as u16 + 3)?;
+            &mut tex_descriptors, 1)?;
 
         Ok(Self {
             gpu,
@@ -330,9 +171,6 @@ impl<'a> Application<'a> {
             depth_buffer,
             tex_descriptors,
             sampler_descriptors,
-            model,
-            materials,
-            material_textures,
 
             gltf,
 

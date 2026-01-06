@@ -29,3 +29,4 @@ lz4 = "1.28.1"
 tobj = "4.0.3"
 easy-gltf = "1.1.5"
 itertools = "0.14.0"
+half = { version = "2.7.1", features = ["bytemuck"] }

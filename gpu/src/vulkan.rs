@@ -29,6 +29,8 @@ const EXTENSION_REQUIREMENTS: &[vk::ExtensionName] = &[
     vk::EXT_DESCRIPTOR_INDEXING_EXTENSION.name,
     vk::EXT_DESCRIPTOR_BUFFER_EXTENSION.name,
     vk::KHR_GET_MEMORY_REQUIREMENTS2_EXTENSION.name,
+    vk::KHR_STORAGE_BUFFER_STORAGE_CLASS_EXTENSION.name,
+    vk::KHR_16BIT_STORAGE_EXTENSION.name,
 ];
 
 pub fn create_semaphore(device: &Device, value: u64) -> Result<vk::Semaphore> {
@@ -552,12 +554,16 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         .multi_draw_indirect(true)
         .sampler_anisotropy(true);
 
+    let mut info_11 = vk::PhysicalDeviceVulkan11Features::builder()
+        .storage_buffer_16bit_access(true);
+
     let mut info_12 = vk::PhysicalDeviceVulkan12Features::builder()
         .runtime_descriptor_array(true)
         .buffer_device_address(true)
         .timeline_semaphore(true)
         .descriptor_indexing(true)
-        .shader_sampled_image_array_non_uniform_indexing(true);
+        .shader_sampled_image_array_non_uniform_indexing(true)
+        .shader_float16(true);
 
     let mut info_13 = vk::PhysicalDeviceVulkan13Features::builder()
         .dynamic_rendering(true)
@@ -574,6 +580,7 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         .enabled_layer_names(&layers)
         .enabled_extension_names(&extensions)
         .enabled_features(&features)
+        .push_next(&mut info_11)
         .push_next(&mut info_12)
         .push_next(&mut info_13)
         .push_next(&mut info_shader_object)

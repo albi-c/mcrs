@@ -3,10 +3,11 @@ use std::path::Path;
 use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use easy_gltf::model::Mode;
-use glam::{Vec2, Vec3, Vec3Swizzles, Vec4};
+use glam::{Vec2, Vec3, Vec4};
+use half::f16;
 use image::EncodableLayout;
 use itertools::Itertools;
-use gpu::{MemoryAllocation, MemoryAllocator};
+use gpu::{CommandBuffer, MemoryAllocation, MemoryAllocator};
 use crate::application::{create_texture, Material, Vertex};
 
 pub struct Scene<'a> {
@@ -41,6 +42,17 @@ macro_rules! convert_vec {
     };
 }
 
+fn add_texture<'a, 'b>(gpu: &'a gpu::Gpu, format: gpu::Format, width: u32, height: u32, data: &[u8],
+                       cmd_buf: &mut CommandBuffer<'b>, tex_descriptors: &mut gpu::DescriptorHeap<'a>,
+                       tex_offset: &mut u16) -> Result<(u16, gpu::Texture<'a>)> where 'a: 'b {
+    let alloc = gpu.allocator().alloc_data(data)?;
+    let tex = create_texture(gpu, (width, height), alloc, format, cmd_buf)?;
+    let tex_index = *tex_offset;
+    tex.view_descriptor(&mut tex_descriptors[tex_index as usize])?;
+    *tex_offset += 1;
+    Ok((tex_index, tex))
+}
+
 fn load_materials<'a, 'b>(material_iter: impl IntoIterator<Item = (&'b easy_gltf::Material, u32)>, count: usize, gpu: &'a gpu::Gpu,
                           tex_descriptors: &mut gpu::DescriptorHeap<'a>, tex_offset: &mut u16) -> Result<(Vec<gpu::Texture<'a>>, gpu::Allocation<'a, Material>)> {
     let mut textures = vec![];
@@ -52,26 +64,58 @@ fn load_materials<'a, 'b>(material_iter: impl IntoIterator<Item = (&'b easy_gltf
         // TODO: emissive
         // TODO: pbr textures
         let pbr = &material.pbr;
-        let color_tex = pbr.base_color_texture.as_ref().ok_or_else(|| anyhow!("material missing color texture"))?;
-        let alloc = gpu.allocator().alloc_data(color_tex.as_bytes())?;
-        let tex = create_texture(
-            gpu, (color_tex.width(), color_tex.height()),
-            alloc, gpu::Format::RGBA8UNorm, &mut cmd_buf)?;
-        let tex_diffuse = *tex_offset;
-        tex.view_descriptor(&mut tex_descriptors[tex_diffuse as usize])?;
-        *tex_offset += 1;
+
+        let tex_diffuse = pbr.base_color_texture.as_ref().ok_or_else(|| anyhow!("material missing color texture"))?;
+        let (tex_diffuse, tex) = add_texture(
+            gpu, gpu::Format::RGBA8UNorm, tex_diffuse.width(), tex_diffuse.height(),
+            tex_diffuse.as_bytes(), &mut cmd_buf, tex_descriptors, tex_offset)?;
         textures.push(tex);
+
+        let (tex_normal, normal_factor) = if let Some(normals) = &material.normal {
+            let tex = &normals.texture;
+            let src_data = tex.as_bytes();
+            let pixel_count = tex.width() as usize * tex.height() as usize;
+            let mut data = vec![0u8; pixel_count * 4];
+            let mut si = 0;
+            let mut di = 0;
+            for _ in 0..pixel_count {
+                data[di + 0] = src_data[si + 0];
+                data[di + 1] = src_data[si + 1];
+                data[di + 2] = src_data[si + 2];
+                data[di + 3] = 0;
+                si += 3;
+                di += 4;
+            }
+            let (tex_normal, tex) = add_texture(
+                gpu, gpu::Format::RGBA8UNorm, tex.width(), tex.height(),
+                &data, &mut cmd_buf, tex_descriptors, tex_offset)?;
+            textures.push(tex);
+            (tex_normal - tex_diffuse, normals.factor)
+        } else {
+            (0, 0.0)
+        };
+
+        let tex_metallic = if let Some(tex) = &pbr.metallic_texture {
+            let (tex_metallic, tex) = add_texture(
+                gpu, gpu::Format::R8UNorm, tex.width(), tex.height(),
+                tex.as_bytes(), &mut cmd_buf, tex_descriptors, tex_offset)?;
+            textures.push(tex);
+            tex_metallic - tex_diffuse
+        } else {
+            0
+        };
 
         let mut ambient_and_intensity = convert_vec!(4 pbr.base_color_factor);
         ambient_and_intensity.w = 0.0;
 
         let mat = Material {
-            tex_disp: 0,
+            tex_offsets: Material::pack_tex_offsets(tex_normal, tex_metallic, 0),
             tex_diffuse,
 
             ambient_and_intensity: Material::pack_vec4(ambient_and_intensity),
-            diffuse_and_dissolve: Material::pack_vec4(Vec4::new(1.0, 1.0, 1.0, 0.0)),
-            specular_and_exp: Material::pack_vec4(Vec4::new(0.0, 0.0, 0.0, 0.0)),
+            diffuse_and_normal: Material::pack_vec4(Vec4::new(1.0, 1.0, 1.0, normal_factor)),
+            // specular is not used
+            specular_and_exp: Material::pack_vec4(Vec4::new(0.0, 0.0, 0.0, pbr.metallic_factor)),
         };
         materials.host_mut()[index as usize] = mat;
     }
@@ -137,7 +181,7 @@ fn load_scene<'a>(scene: easy_gltf::Scene, gpu: &'a gpu::Gpu,
                 convert_vec!(3 src.position),
                 material,
                 convert_vec!(2 src.tex_coords),
-                normal.xy(),
+                [f16::from_f32(normal.x), f16::from_f32(normal.y), f16::from_f32(normal.z), f16::default()],
             );
         }
         vertex_offset += mod_vertices.len();
