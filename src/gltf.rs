@@ -64,11 +64,15 @@ fn load_materials<'a, 'b>(material_iter: impl IntoIterator<Item = (&'b easy_gltf
         // TODO: emissive
         let pbr = &material.pbr;
 
-        let tex_diffuse = pbr.base_color_texture.as_ref().ok_or_else(|| anyhow!("material missing color texture"))?;
-        let (tex_diffuse, tex) = add_texture(
-            gpu, gpu::Format::RGBA8UNorm, tex_diffuse.width(), tex_diffuse.height(),
-            tex_diffuse.as_bytes(), &mut cmd_buf, tex_descriptors, tex_offset)?;
-        textures.push(tex);
+        let (tex_diffuse, prev_tex) = if let Some(tex) = &pbr.base_color_texture {
+            let (tex_diffuse, tex) = add_texture(
+                gpu, gpu::Format::RGBA8UNorm, tex.width(), tex.height(),
+                tex.as_bytes(), &mut cmd_buf, tex_descriptors, tex_offset)?;
+            textures.push(tex);
+            (tex_diffuse, tex_diffuse)
+        } else {
+            ((1 << 15) | *tex_offset - 1, *tex_offset - 1)
+        };
 
         let (tex_normal, normal_factor) = if let Some(normals) = &material.normal {
             let tex = &normals.texture;
@@ -89,7 +93,7 @@ fn load_materials<'a, 'b>(material_iter: impl IntoIterator<Item = (&'b easy_gltf
                 gpu, gpu::Format::RGBA8UNorm, tex.width(), tex.height(),
                 &data, &mut cmd_buf, tex_descriptors, tex_offset)?;
             textures.push(tex);
-            (tex_normal - tex_diffuse, normals.factor)
+            (tex_normal - prev_tex, normals.factor)
         } else {
             (0, 0.0)
         };
@@ -99,7 +103,7 @@ fn load_materials<'a, 'b>(material_iter: impl IntoIterator<Item = (&'b easy_gltf
                 gpu, gpu::Format::R8UNorm, tex.width(), tex.height(),
                 tex.as_bytes(), &mut cmd_buf, tex_descriptors, tex_offset)?;
             textures.push(tex);
-            tex_metallic - tex_diffuse
+            tex_metallic - prev_tex
         } else {
             0
         };
@@ -109,7 +113,7 @@ fn load_materials<'a, 'b>(material_iter: impl IntoIterator<Item = (&'b easy_gltf
                 gpu, gpu::Format::R8UNorm, tex.width(), tex.height(),
                 tex.as_bytes(), &mut cmd_buf, tex_descriptors, tex_offset)?;
             textures.push(tex);
-            tex_roughness - tex_diffuse
+            tex_roughness - prev_tex
         } else {
             0
         };

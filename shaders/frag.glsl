@@ -34,19 +34,20 @@ vec4 readPacked(uint packed) {
 }
 
 void main() {
-    uint texDiffuse = inMat.x >> 16;
+    uint texDiffuseRaw = inMat.x >> 16;
+    uint texDiffuse = texDiffuseRaw & 0x7fff;
     uint texDisp = texDiffuse + (inMat.x & 0xf);
     uint texMetallic = texDiffuse + ((inMat.x >> 4) & 0xf);
     uint texRoughness = texDiffuse + ((inMat.x >> 8) & 0xf);
 //    uint tex? = texDiffuse + ((inMat.x >> 12) & 0xf);
 
-    vec4 sampleDiffuse = texture(sampler2D(textures[nonuniformEXT(texDiffuse)], samplers[0]), inUv);
+    vec4 sampleDiffuse = (texDiffuseRaw & 0x8000) != 0 ? vec4(1.0) : texture(sampler2D(textures[nonuniformEXT(texDiffuse)], samplers[0]), inUv);
     if (sampleDiffuse.a < 0.001) {
         discard;
     }
     vec3 sampleDisp = texDisp == texDiffuse ? vec3(0.0, 0.0, 1.0) : texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv).rgb;
-    float sampleMetallic = texMetallic == texDiffuse ? 1.0 : texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv).r;
-    float sampleRoughness = texRoughness == texDiffuse ? 1.0 : texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv).r;
+    float sampleMetallic = texMetallic == texDiffuse ? 0.0 : texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv).r;
+    float sampleRoughness = texRoughness == texDiffuse ? 0.0 : texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv).r;
 
     vec4 ambientAndRoughness = readPacked(inMat.y);
     // ambient is unused
@@ -73,6 +74,7 @@ void main() {
 
     outColor = vec4(sampleDiffuse.rgb * diffuse * (intensityAmbient + intensityDiffuse) + intensitySpecular, 1.0);
 //    outColor = vec4(reflectDirection, 1.0);
+//    outColor = vec4(sampleMetallic, 0.0, 0.0, 1.0);
 //    outColor = vec4(specularExp == roughness ? 0.0 : 1.0, 0.0, 0.0, 1.0);
 //    outColor = vec4(specularExp, sampleMetallic, 0.0, 1.0);
 

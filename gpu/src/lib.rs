@@ -755,11 +755,8 @@ pub struct SubmitWait<'a>(vk::Semaphore, u64, &'a Gpu, Box<[Box<dyn Debug + 'a>]
 impl<'a> Drop for SubmitWait<'a> {
     fn drop(&mut self) {
         if !self.3.is_empty() {
-            if std::thread::panicking() {
-                log::error!("buffer submit result with owned values dropped without waiting");
-            } else {
-                panic!("buffer submit result with owned values dropped without waiting");
-            }
+            log::error!("buffer submit result with owned values dropped without waiting");
+            println!("{}", std::backtrace::Backtrace::capture());
         }
     }
 }
@@ -871,11 +868,8 @@ pub struct CommandBuffer<'a> {
 impl<'a> Drop for CommandBuffer<'a> {
     fn drop(&mut self) {
         if self.item.is_some() {
-            if std::thread::panicking() {
-                log::error!("Command buffer dropped before submission");
-            } else {
-                panic!("Command buffer dropped before submission");
-            }
+            log::error!("Command buffer dropped before submission");
+            println!("{}", std::backtrace::Backtrace::capture());
         }
     }
 }
