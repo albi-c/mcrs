@@ -296,13 +296,8 @@ impl<'a> Application<'a> {
         )])?;
 
         let intensity = 1.5;
-        let color = Vec3A::new(0.8, 0.5, 0.1);
+        let color = Vec3A::new(0.9, 0.6, 0.0);
         let lights = arena.alloc_data(&[
-            // Light {
-            //     pos: Vec3::new(0.0, 50.0, 0.0),
-            //     intensity: 100.0,
-            //     color: Vec3A::new(1.0, 0.9, 0.7),
-            // },
             Light {
                 pos: Vec3::new(-6.2, 1.3, -2.2),
                 intensity,

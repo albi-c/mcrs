@@ -1082,7 +1082,7 @@ impl<'a> CommandBuffer<'a> {
     fn create_attachment(attachment: &Target<'_>) -> vk::RenderingAttachmentInfoBuilder<'static> {
         vk::RenderingAttachmentInfo::builder()
             .image_view(attachment.view.view)
-            .image_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)  // TODO: move to struct
+            .image_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::from_raw(attachment.load_op as i32))
             .store_op(vk::AttachmentStoreOp::from_raw(attachment.store_op as i32))
             .clear_value(attachment.clear_value.to_vulkan())
@@ -1583,10 +1583,6 @@ impl Gpu {
 
     // pub fn create_compute_pipeline(&self, spirv: &[u8]) -> Pipeline<'_> {
     //     todo!()
-    // }
-    // pub fn create_graphics_pipeline(&self, vertex_spirv: &[u8], pixel_spirv: &[u8],
-    //                                 raster_desc: RasterDesc) -> Result<Pipeline<'_>> {
-    //     create_graphics_pipeline(self, vertex_spirv, pixel_spirv, raster_desc)
     // }
     // pub fn create_graphics_meshlet_pipeline(&self, meshlet_spirv: &[u8], pixel_spirv: &[u8],
     //                                         raster_desc: RasterDesc) -> Pipeline<'_> {

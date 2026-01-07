@@ -214,7 +214,6 @@ fn load_scene<'a>(gpu: &'a gpu::Gpu, scene: gltf::Scene<'_>, buffers: &[gltf::bu
     let mut material_indices = HashMap::new();
     visit_meshes(scene.nodes(), |_node, mesh| {
         for prim in mesh.primitives() {
-            // TODO: materials
             if prim.mode() != gltf::mesh::Mode::Triangles {
                 return Err(anyhow!("gltf model must be simple triangles"));
             }
