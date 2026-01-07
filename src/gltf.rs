@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use anyhow::{anyhow, Result};
 use bytemuck::{Pod, Zeroable};
-use glam::{Vec2, Vec3, Vec4};
+use glam::{Mat3, Mat4, Quat, Vec2, Vec3, Vec4, Vec4Swizzles};
 use half::f16;
 use itertools::izip;
 use gpu::{MemoryAllocation, MemoryAllocator};
@@ -45,24 +45,44 @@ pub struct Model<'a> {
 }
 
 fn _visit_nodes_impl<'a>(nodes: impl IntoIterator<Item = gltf::Node<'a>>,
-                         visitor: &mut impl FnMut(gltf::Node<'a>) -> Result<()>) -> Result<()> {
+                         visitor: &mut impl FnMut(gltf::Node<'a>, &Mat4, &Mat3) -> Result<()>,
+                         transform: &Mat4, scale_transform: &Mat3) -> Result<()> {
     for node in nodes {
-        visitor(node.clone())?;
-        _visit_nodes_impl(node.children(), visitor)?;
+        let mat = match node.transform() {
+            gltf::scene::Transform::Matrix { matrix } => {
+                Mat4::from_cols_array_2d(&matrix)
+            },
+            gltf::scene::Transform::Decomposed { translation, rotation, scale } => {
+                Mat4::from_scale_rotation_translation(
+                    Vec3::from_array(scale),
+                    Quat::from_array(rotation).normalize(),
+                    Vec3::from_array(translation),
+                )
+            },
+        };
+        let tr = transform * mat;
+        let s_mat = Mat3::from_cols(
+            mat.x_axis.xyz(),
+            mat.y_axis.xyz(),
+            mat.z_axis.xyz(),
+        );
+        let s_tr = scale_transform * s_mat;
+        visitor(node.clone(), &tr, &s_tr)?;
+        _visit_nodes_impl(node.children(), visitor, &tr, &s_tr)?;
     }
     Ok(())
 }
 
 fn visit_nodes<'a>(nodes: impl IntoIterator<Item = gltf::Node<'a>>,
-                   mut visitor: impl FnMut(gltf::Node<'a>) -> Result<()>) -> Result<()> {
-    _visit_nodes_impl(nodes, &mut visitor)
+                   mut visitor: impl FnMut(gltf::Node<'a>, &Mat4, &Mat3) -> Result<()>) -> Result<()> {
+    _visit_nodes_impl(nodes, &mut visitor, &Mat4::default(), &Mat3::default())
 }
 
 fn visit_meshes<'a>(nodes: impl IntoIterator<Item = gltf::Node<'a>>,
-                    mut visitor: impl FnMut(gltf::Node<'a>, gltf::Mesh<'a>) -> Result<()>) -> Result<()> {
-    visit_nodes(nodes, |node| {
+                    mut visitor: impl FnMut(gltf::Node<'a>, &Mat4, &Mat3, gltf::Mesh<'a>) -> Result<()>) -> Result<()> {
+    visit_nodes(nodes, |node, transform, scale_transform| {
         if let Some(mesh) = node.mesh() {
-            visitor(node, mesh)?;
+            visitor(node, transform, scale_transform, mesh)?;
         }
         Ok(())
     })
@@ -212,7 +232,7 @@ fn load_scene<'a>(gpu: &'a gpu::Gpu, scene: gltf::Scene<'_>, buffers: &[gltf::bu
     let mut vertex_count = 0;
     let mut index_count = 0;
     let mut material_indices = HashMap::new();
-    visit_meshes(scene.nodes(), |_node, mesh| {
+    visit_meshes(scene.nodes(), |_node, _transform, _scale_transform, mesh| {
         for prim in mesh.primitives() {
             if prim.mode() != gltf::mesh::Mode::Triangles {
                 return Err(anyhow!("gltf model must be simple triangles"));
@@ -262,8 +282,7 @@ fn load_scene<'a>(gpu: &'a gpu::Gpu, scene: gltf::Scene<'_>, buffers: &[gltf::bu
     }
     let queue_submit = queue.submit_no_signal(cmd_buf)?;
 
-    visit_meshes(scene.nodes(), |_node, mesh| {
-        // TODO: use node.transform(), also use parent transform
+    visit_meshes(scene.nodes(), |_node, transform, scale_transform, mesh| {
         for prim in mesh.primitives() {
             assert_eq!(prim.mode(), gltf::mesh::Mode::Triangles);
             let reader = prim.reader(
@@ -286,9 +305,9 @@ fn load_scene<'a>(gpu: &'a gpu::Gpu, scene: gltf::Scene<'_>, buffers: &[gltf::bu
                 reader.read_tex_coords(0).unwrap().into_f32().into_iter(),
                 reader.read_normals().unwrap().into_iter(),
             ) {
-                let pos = Vec3::from_array(pos);
+                let pos = transform.transform_point3(Vec3::from_array(pos));
                 let uv = Vec2::from_array(uv);
-                let nor = Vec3::from_array(nor);
+                let nor = (scale_transform * Vec3::from_array(nor)).normalize();
                 let vert = Vertex(
                     pos,
                     mat,
@@ -326,7 +345,7 @@ impl<'a> Model<'a> {
             scenes.push(load_scene(
                 gpu, scene, &buffers, &images, tex_descriptors, &mut tex_offset)?);
         }
-        println!("Loaded model in {} seconds", start.elapsed().as_secs_f64());
+        println!("Loaded {} scenes in {} seconds", scenes.len(), start.elapsed().as_secs_f64());
         Ok(Self {
             scenes,
         })
@@ -342,12 +361,14 @@ impl<'a> Model<'a> {
 
     pub fn deserialize(gpu: &'a gpu::Gpu, tex_descriptors: &mut gpu::DescriptorHeap<'a>,
                        src: &mut impl Read) -> Result<Self> {
+        let start = std::time::Instant::now();
         let mut count = [0usize];
         src.read_exact(bytemuck::cast_slice_mut(&mut count))?;
         let mut scenes = vec![];
         for _ in 0..count[0] {
             scenes.push(Scene::deserialize(gpu, tex_descriptors, src)?);
         }
+        println!("Loaded {} scenes in {} seconds", scenes.len(), start.elapsed().as_secs_f64());
         Ok(Self {
             scenes,
         })

@@ -115,6 +115,19 @@ fn load_texture<'a, 'b>(path: impl AsRef<Path>, gpu: &'a gpu::Gpu,
     create_texture(gpu, (width, height), alloc, gpu::Format::RGBA8UNorm, cmd_buf)
 }
 
+fn load_gltf_cached<'a>(path: impl AsRef<Path>, cache_path: impl AsRef<Path>, gpu: &'a gpu::Gpu,
+                        tex_descriptors: &mut gpu::DescriptorHeap<'a>) -> Result<gltf::Model<'a>> {
+    if fs::exists(&cache_path)? {
+        let mut file = fs::File::open(cache_path)?;
+        gltf::Model::deserialize(gpu, tex_descriptors, &mut file)
+    } else {
+        let gltf = gltf::Model::load(gpu, path, tex_descriptors, 1)?;
+        let mut file = fs::File::create(cache_path)?;
+        gltf.serialize(&mut file)?;
+        Ok(gltf)
+    }
+}
+
 pub struct Application<'a> {
     gpu: &'a gpu::Gpu,
     vertex_shader: gpu::Shader<'a>,
@@ -158,18 +171,9 @@ impl<'a> Application<'a> {
 
         queue.submit_no_signal(command_buffer)?.wait();
 
-        let cache = "models/sponza_gltf.cache";
-        let gltf = if fs::exists(cache)? {
-            let mut file = fs::File::open(cache)?;
-            gltf::Model::deserialize(gpu, &mut tex_descriptors, &mut file)?
-        } else {
-            let gltf = gltf::Model::load(
-                gpu, "models/Sponza_gltf/glTF/Sponza.gltf",
-                &mut tex_descriptors, 1)?;
-            let mut file = fs::File::create(cache)?;
-            gltf.serialize(&mut file)?;
-            gltf
-        };
+        let gltf = load_gltf_cached(
+            "models/Sponza_gltf/glTF/Sponza.gltf", "models/sponza_gltf.cache",
+            gpu, &mut tex_descriptors)?;
 
         Ok(Self {
             gpu,
@@ -280,7 +284,7 @@ impl<'a> Application<'a> {
         );
         let mat_flip = Mat4::from_scale(Vec3::new(1.0, -1.0, 1.0));
         let mat_view = self.get_view_matrix();
-        let mat_model = Mat4::from_scale(Vec3::splat(0.01));
+        let mat_model = Mat4::default();
         let mat_mvp = mat_perspective * mat_flip * mat_view * mat_model;
 
         const { assert!(size_of::<Vertex>() == 32) };

@@ -51,8 +51,8 @@ vec3 getLight(in vec3 normal, in vec3 viewDir, float specExp, float metallic, in
     vec3 halfDir = normalize(lightDir + viewDir);
     float intSpec = pow(max(dot(normal, halfDir), 0.0), max(specExp, 1.0) * 12.0) * metallic;
     float distance = length(light.posAndIntensity.xyz - inWorldPos);
-    specular = light.color.rgb * intSpec / max(pow(distance, 0.9), 1.0) * light.posAndIntensity.w * 0.7;
-    return light.color.rgb * intDiff / max(pow(distance, 1.2), 1.0) * light.posAndIntensity.w * 0.8;
+    specular = light.color.rgb * intSpec / max(pow(distance, 0.8), 1.0) * light.posAndIntensity.w * 0.7;
+    return light.color.rgb * intDiff / max(pow(distance, 1.1), 1.0) * light.posAndIntensity.w * 0.8;
 }
 
 void main() {
@@ -78,7 +78,7 @@ void main() {
 //    float ambient = ambientAndRoughness.rgb;
     float roughness = ambientAndRoughness.a * sampleRoughness;
 
-    float intensityAmbient = 0.2;
+    float intensityAmbient = 0.1;
 
     vec4 diffuseAndNormal = readPacked(inMat.z);
     vec3 diffuse = diffuseAndNormal.rgb;
