@@ -152,8 +152,8 @@ impl<'a> Application<'a> {
         queue.submit_no_signal(command_buffer)?.wait();
 
         let gltf = gltf::load_gltf(
-            "models/Sponza_gltf/glTF/Sponza.gltf", gpu,
-            &mut tex_descriptors, 1)?;
+            gpu, "models/Sponza_gltf/glTF/Sponza.gltf")?;
+            // &mut tex_descriptors, 1)?;
 
         Ok(Self {
             gpu,
@@ -262,9 +262,7 @@ impl<'a> Application<'a> {
         );
         let mat_flip = Mat4::from_scale(Vec3::new(1.0, -1.0, 1.0));
         let mat_view = self.get_view_matrix();
-        let mat_model = Mat4::default();
-        // let mat_model = Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0));
-             // * Mat4::from_scale(Vec3::splat(0.01));
+        let mat_model = Mat4::from_scale(Vec3::splat(0.01));
         let mat_mvp = mat_perspective * mat_flip * mat_view * mat_model;
 
         const { assert!(size_of::<Vertex>() == 32) };

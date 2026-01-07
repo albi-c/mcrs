@@ -467,6 +467,8 @@ pub struct SamplerDesc {
     pub wrap_v: TextureWrap,
     #[default(TextureWrap::Repeat)]
     pub wrap_w: TextureWrap,
+    #[default = true]
+    pub anisotropy: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
@@ -1551,7 +1553,9 @@ impl Gpu {
             .mipmap_mode(vk::SamplerMipmapMode::from_raw(desc.mip_mode as i32))
             .address_mode_u(vk::SamplerAddressMode::from_raw(desc.wrap_u as i32))
             .address_mode_v(vk::SamplerAddressMode::from_raw(desc.wrap_v as i32))
-            .address_mode_w(vk::SamplerAddressMode::from_raw(desc.wrap_w as i32));
+            .address_mode_w(vk::SamplerAddressMode::from_raw(desc.wrap_w as i32))
+            .anisotropy_enable(desc.anisotropy)
+            .max_anisotropy(16.0);  // TODO: properly detect
         let sampler = unsafe { self.device.create_sampler(&sampler_info, None) }?;
 
         let image_info = vk::DescriptorImageInfo::builder()
