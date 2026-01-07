@@ -31,6 +31,14 @@ pub struct Material {
     pub specular_and_exp: u32,
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct Light {
+    pub pos: Vec3,
+    pub intensity: f32,
+    pub color: Vec3A,
+}
+
 impl Material {
     pub fn pack_vec4(vec: Vec4) -> u32 {
         let vec = (vec * 255.0).clamp(Vec4::splat(0.0), Vec4::splat(255.0));
@@ -42,11 +50,10 @@ impl Material {
         ])
     }
 
-    pub fn pack_tex_offsets(normal: u16, metallic: u16, roughness: u16) -> u16 {
+    pub fn pack_tex_offsets(normal: u16, metallic_roughness: u16) -> u16 {
         assert!(normal < 16, "normal texture offset out of range: {normal}");
-        assert!(metallic < 16, "metallic texture offset out of range: {metallic}");
-        assert!(roughness < 16, "roughness texture offset out of range: {roughness}");
-        (roughness << 8) | (metallic << 4) | normal
+        assert!(metallic_roughness < 16, "metallic_roughness texture offset out of range: {metallic_roughness}");
+        (metallic_roughness << 4) | normal
     }
 }
 
@@ -152,8 +159,8 @@ impl<'a> Application<'a> {
         queue.submit_no_signal(command_buffer)?.wait();
 
         let gltf = gltf::load_gltf(
-            gpu, "models/Sponza_gltf/glTF/Sponza.gltf")?;
-            // &mut tex_descriptors, 1)?;
+            gpu, "models/Sponza_gltf/glTF/Sponza.gltf",
+            &mut tex_descriptors, 1)?;
 
         Ok(Self {
             gpu,
@@ -277,13 +284,45 @@ impl<'a> Application<'a> {
             self.gltf.scenes[0].materials.device(),
         )])?;
 
+        let intensity = 1.5;
+        let color = Vec3A::new(0.8, 0.5, 0.1);
+        let lights = arena.alloc_data(&[
+            // Light {
+            //     pos: Vec3::new(0.0, 50.0, 0.0),
+            //     intensity: 100.0,
+            //     color: Vec3A::new(1.0, 0.9, 0.7),
+            // },
+            Light {
+                pos: Vec3::new(-6.2, 1.3, -2.2),
+                intensity,
+                color,
+            },
+            Light {
+                pos: Vec3::new(-6.2, 1.3, 1.4),
+                intensity,
+                color,
+            },
+            Light {
+                pos: Vec3::new(4.9, 1.3, 1.4),
+                intensity,
+                color,
+            },
+            Light {
+                pos: Vec3::new(4.9, 1.3, -2.2),
+                intensity,
+                color,
+            },
+        ])?;
+
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-        struct PixelData(Vec3A, Vec3A);
+        struct PixelData(Vec3A, u32, [u32; 3], gpu::DevicePointer, u64);
         let pixel_data = arena.alloc_data(&[PixelData(
-            // Vec3A::new(200.0, 1000.0, 200.0),
-            Vec3A::new(0.0, 100.0, 0.0),
             self.camera_pos.to_vec3a(),
+            lights.len() as u32,
+            [0; 3],
+            lights.device(),
+            0,
         )])?;
 
         let mut command_buffer = self.queue.create_buffer()?;
@@ -341,6 +380,9 @@ impl<'a> Application<'a> {
 
     pub fn key(&mut self, key: PhysicalKey, state: ElementState) {
         self.keys.insert(key, state == ElementState::Pressed);
+        if key == PhysicalKey::Code(KeyCode::KeyP) && state == ElementState::Pressed {
+            println!("{:?}", self.camera_pos);
+        }
     }
 
     pub fn mouse_move(&mut self, delta: (f64, f64)) {

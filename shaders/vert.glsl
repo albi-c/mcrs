@@ -20,13 +20,13 @@ struct Vertex {
 };
 
 struct Material {
-    // (diffuse << 16) | offsets
+    // diffuse << 16 | offsets
     // ambient == diffuse
     // alpha is in diffuse
-    // 4 offsets from diffuse texture (? | roughness << 8 | metallic << 4 | normal)
+    // 4 offsets from diffuse texture (? | metallic_roughness << 4 | normal)
     uint texDiffuseOffsets;
 
-    // (? << 24) | (b << 16) | (g << 8) | r
+    // ? << 24 | b << 16 | g << 8 | r
     uint ambientAndRoughness;
     uint diffuseAndNormal;
     uint specularAndExp;

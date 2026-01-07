@@ -13,9 +13,21 @@ layout(set = 0, binding = 0) uniform texture2D textures[];
 layout(set = 1, binding = 0) uniform writeonly image2D textures_rw[];
 layout(set = 2, binding = 0) uniform sampler samplers[];
 
+struct Light {
+    vec4 posAndIntensity;
+    vec4 color;
+};
+
+layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer FragDataLights {
+    Light data[];
+};
+
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer FragData {
-    vec4 sunPos;
     vec4 viewPos;
+    uint lightCount;
+    uint _padding1[3];
+    FragDataLights lights;
+    uint _padding2[2];
 };
 
 layout(std430, push_constant) uniform Data {
@@ -33,21 +45,33 @@ vec4 readPacked(uint packed) {
     return color / 255.0;
 }
 
+vec3 getLight(in vec3 normal, in vec3 viewDir, float specExp, float metallic, in Light light, out vec3 specular) {
+    vec3 lightDir = normalize(light.posAndIntensity.xyz - inWorldPos);
+    float intDiff = max(0.0, dot(normal, lightDir));
+    vec3 halfDir = normalize(lightDir + viewDir);
+    float intSpec = pow(max(dot(normal, halfDir), 0.0), max(specExp, 1.0) * 12.0) * metallic;
+    float distance = length(light.posAndIntensity.xyz - inWorldPos);
+    specular = light.color.rgb * intSpec / max(pow(distance, 1.1), 1.0) * light.posAndIntensity.w * 0.7;
+    return light.color.rgb * intDiff / max(pow(distance, 1.5), 1.0) * light.posAndIntensity.w;
+}
+
 void main() {
     uint texDiffuseRaw = inMat.x >> 16;
     uint texDiffuse = texDiffuseRaw & 0x7fff;
     uint texDisp = texDiffuse + (inMat.x & 0xf);
-    uint texMetallic = texDiffuse + ((inMat.x >> 4) & 0xf);
-    uint texRoughness = texDiffuse + ((inMat.x >> 8) & 0xf);
+    uint texMetallicRoughness = texDiffuse + ((inMat.x >> 4) & 0xf);
+//    uint tex? = texDiffuse + ((inMat.x >> 8) & 0xf);
 //    uint tex? = texDiffuse + ((inMat.x >> 12) & 0xf);
 
     vec4 sampleDiffuse = (texDiffuseRaw & 0x8000) != 0 ? vec4(1.0) : texture(sampler2D(textures[nonuniformEXT(texDiffuse)], samplers[0]), inUv);
     if (sampleDiffuse.a < 0.001) {
         discard;
     }
+
     vec3 sampleDisp = texDisp == texDiffuse ? vec3(0.0, 0.0, 1.0) : texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv).rgb;
-    float sampleMetallic = texMetallic == texDiffuse ? 0.0 : texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv).r;
-    float sampleRoughness = texRoughness == texDiffuse ? 0.0 : texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv).r;
+    vec2 sampleMetallicRoughness = texMetallicRoughness == texDiffuse ? vec2(1.0) : texture(sampler2D(textures[nonuniformEXT(texMetallicRoughness)], samplers[0]), inUv).rg;
+    float sampleMetallic = sampleMetallicRoughness.g;
+    float sampleRoughness = sampleMetallicRoughness.r;
 
     vec4 ambientAndRoughness = readPacked(inMat.y);
     // ambient is unused
@@ -63,20 +87,19 @@ void main() {
     vec4 specularAndExp = readPacked(inMat.w);
     // specular is unused
 //    vec3 specular = specularAndExp.rgb;
-    float specularExp = specularAndExp.a * sampleMetallic;
+    float specularExp = specularAndExp.a;
 
-    vec3 normal = inNormal;
-    vec3 sunDirection = normalize(data.frag.sunPos.xyz - inWorldPos);
-    float intensityDiffuse = max(0.0, dot(normal, sunDirection)) * 0.6;
-    vec3 lookDirection = normalize(data.frag.viewPos.xyz - inWorldPos);
-    vec3 halfwayDirection = normalize(sunDirection + lookDirection);
-    float intensitySpecular = pow(max(dot(normal, halfwayDirection), 0.0), specularExp * 80.0) * 0.6;
+    vec3 diffuseBase = sampleDiffuse.rgb * diffuse;
+    vec3 resultColor = diffuseBase * intensityAmbient;
 
-    outColor = vec4(sampleDiffuse.rgb * diffuse * (intensityAmbient + intensityDiffuse) + intensitySpecular, 1.0);
-//    outColor = vec4(reflectDirection, 1.0);
-//    outColor = vec4(sampleMetallic, 0.0, 0.0, 1.0);
-//    outColor = vec4(specularExp == roughness ? 0.0 : 1.0, 0.0, 0.0, 1.0);
-//    outColor = vec4(specularExp, sampleMetallic, 0.0, 1.0);
+    uint lightCount = data.frag.lightCount;
+    FragDataLights lights = data.frag.lights;
+    vec3 viewDir = normalize(data.frag.viewPos.xyz - inWorldPos);
+    for (uint i = 0; i < lightCount; i++) {
+        vec3 specular;
+        resultColor += diffuseBase * getLight(inNormal, viewDir, specularExp, sampleMetallic, lights.data[i], specular);
+        resultColor += specular;
+    }
 
-//    outColor = vec4(normal, 1.0);
+    outColor = vec4(resultColor, 1.0);
 }

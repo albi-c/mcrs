@@ -1,10 +1,12 @@
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::path::Path;
 use anyhow::{anyhow, Result};
-use glam::{Vec2, Vec3};
+use glam::{Vec2, Vec3, Vec4};
 use half::f16;
 use itertools::izip;
-use gpu::MemoryAllocation;
-use crate::application::{Material, Vertex};
+use gpu::{MemoryAllocation, MemoryAllocator};
+use crate::application::{create_texture, Material, Vertex};
 
 pub struct Scene<'a> {
     pub vertices: gpu::Allocation<'a, Vertex>,
@@ -41,9 +43,137 @@ fn visit_meshes<'a>(nodes: impl IntoIterator<Item = gltf::Node<'a>>,
     })
 }
 
-fn load_scene<'a>(gpu: &'a gpu::Gpu, scene: gltf::Scene<'_>, buffers: &[gltf::buffer::Data]) -> Result<Scene<'a>> {
+fn add_texture<'a, 'b>(gpu: &'a gpu::Gpu, format: gpu::Format, width: u32, height: u32, data: &[u8],
+                       cmd_buf: &mut gpu::CommandBuffer<'b>, tex_descriptors: &mut gpu::DescriptorHeap<'a>,
+                       tex_offset: &mut u16) -> Result<(u16, gpu::Texture<'a>)> where 'a: 'b {
+    let alloc = gpu.allocator().alloc_data(data)?;
+    let tex = create_texture(gpu, (width, height), alloc, format, cmd_buf)?;
+    let tex_index = *tex_offset;
+    tex.view_descriptor(&mut tex_descriptors[tex_index as usize])?;
+    *tex_offset += 1;
+    Ok((tex_index, tex))
+}
+
+fn expand_rgb_to_rgba(src: &[u8], expand: u8) -> Vec<u8> {
+    let count = src.len() / 3;
+    let mut dst = Vec::with_capacity(count * 4);
+    let mut i = 0;
+    for _ in 0..count {
+        dst.push(src[i + 0]);
+        dst.push(src[i + 1]);
+        dst.push(src[i + 2]);
+        dst.push(expand);
+        i += 3;
+    }
+    dst
+}
+
+fn shrink_to_gb(pixel_size: usize, src: &[u8]) -> Vec<u8> {
+    let count = src.len() / pixel_size;
+    let mut dst = Vec::with_capacity(count * 2);
+    let mut i = 0;
+    for _ in 0..count {
+        dst.push(src[i + 1]);
+        dst.push(src[i + 2]);
+        i += pixel_size;
+    }
+    dst
+}
+
+fn load_material<'a, 'b>(gpu: &'a gpu::Gpu, mat: &gltf::Material<'_>, cmd_buf: &mut gpu::CommandBuffer<'b>,
+                         tex_descriptors: &mut gpu::DescriptorHeap<'a>, tex_offset: &mut u16,
+                         images: &[gltf::image::Data], textures: &mut Vec<gpu::Texture<'a>>) -> Result<Material> where 'a: 'b {
+    let pbr = mat.pbr_metallic_roughness();
+
+    let (tex_diffuse, base_tex) = if let Some(info) = pbr.base_color_texture() {
+        if info.tex_coord() != 0 {
+            return Err(anyhow!("diffuse uv index is {}, must be 0", info.tex_coord()));
+        }
+        let tex = &images[info.texture().source().index()];
+        let data = if tex.format == gltf::image::Format::R8G8B8 {
+            Cow::Owned(expand_rgb_to_rgba(&tex.pixels, 0xff))
+        } else if tex.format == gltf::image::Format::R8G8B8A8 {
+            Cow::Borrowed(&tex.pixels)
+        } else {
+            return Err(anyhow!("invalid diffuse texture format: {:?}", tex.format));
+        };
+
+        let (tex_diffuse, tex) = add_texture(
+            gpu, gpu::Format::RGBA8UNorm, tex.width, tex.height, &data,
+            cmd_buf, tex_descriptors, tex_offset)?;
+        textures.push(tex);
+        (tex_diffuse, tex_diffuse)
+    } else {
+        (0x8000, *tex_offset)
+    };
+
+    let tex_normal = if let Some(info) = mat.normal_texture() {
+        if info.tex_coord() != 0 {
+            return Err(anyhow!("normal uv index is {}, must be 0", info.tex_coord()));
+        }
+        let tex = &images[info.texture().source().index()];
+        let data = if tex.format == gltf::image::Format::R8G8B8 {
+            Cow::Owned(expand_rgb_to_rgba(&tex.pixels, 0x0))
+        } else if tex.format == gltf::image::Format::R8G8B8A8 {
+            Cow::Borrowed(&tex.pixels)
+        } else {
+            return Err(anyhow!("invalid normal texture format: {:?}", tex.format));
+        };
+        let (tex_normal, tex) = add_texture(
+            gpu, gpu::Format::RGBA8UNorm, tex.width, tex.height, &data,
+            cmd_buf, tex_descriptors, tex_offset)?;
+        textures.push(tex);
+        tex_normal - base_tex
+    } else {
+        0
+    };
+
+    let tex_metallic_roughness = if let Some(info) = pbr.metallic_roughness_texture() {
+        if info.tex_coord() != 0 {
+            return Err(anyhow!("metallic_roughness index is {}, must be 0", info.tex_coord()));
+        }
+        let tex = &images[info.texture().source().index()];
+        let data = if tex.format == gltf::image::Format::R8G8B8 {
+            Cow::Owned(shrink_to_gb(3, &tex.pixels))
+        } else if tex.format == gltf::image::Format::R8G8B8A8 {
+            Cow::Owned(shrink_to_gb(4, &tex.pixels))
+        } else if tex.format == gltf::image::Format::R8G8 {
+            Cow::Borrowed(&tex.pixels)
+        } else {
+            return Err(anyhow!("invalid metallic_roughness texture format: {:?}", tex.format));
+        };
+        let (tex_metallic_roughness, tex) = add_texture(
+            gpu, gpu::Format::RG8UNorm, tex.width, tex.height, &data,
+            cmd_buf, tex_descriptors, tex_offset)?;
+        textures.push(tex);
+        tex_metallic_roughness - base_tex
+    } else {
+        0
+    };
+
+    if mat.occlusion_texture().is_some() {
+        return Err(anyhow!("occlusion textures are not allowed"));
+    }
+
+    let mut diffuse_and_normal = Vec4::from_array(pbr.base_color_factor());
+    diffuse_and_normal.w = 1.0;
+
+    Ok(Material {
+        tex_offsets: Material::pack_tex_offsets(tex_normal, tex_metallic_roughness),
+        tex_diffuse,
+
+        ambient_and_roughness: Material::pack_vec4(Vec4::new(0.0, 0.0, 0.0, pbr.roughness_factor())),
+        diffuse_and_normal: Material::pack_vec4(diffuse_and_normal),
+        specular_and_exp: Material::pack_vec4(Vec4::new(0.0, 0.0, 0.0, pbr.metallic_factor())),
+    })
+}
+
+fn load_scene<'a>(gpu: &'a gpu::Gpu, scene: gltf::Scene<'_>, buffers: &[gltf::buffer::Data],
+                  images: &[gltf::image::Data], tex_descriptors: &mut gpu::DescriptorHeap<'a>,
+                  tex_offset: &mut u16) -> Result<Scene<'a>> {
     let mut vertex_count = 0;
     let mut index_count = 0;
+    let mut material_indices = HashMap::new();
     visit_meshes(scene.nodes(), |_node, mesh| {
         for prim in mesh.primitives() {
             // TODO: materials
@@ -66,6 +196,10 @@ fn load_scene<'a>(gpu: &'a gpu::Gpu, scene: gltf::Scene<'_>, buffers: &[gltf::bu
                 }
             }
             vertex_count += prev_count.unwrap();
+
+            let mat = prim.material();
+            let mat_index = mat.index().ok_or_else(|| anyhow!("gltf model must have material index"))?;
+            let _ = material_indices.try_insert(mat_index, (material_indices.len(), mat));
         }
         Ok(())
     })?;
@@ -78,7 +212,17 @@ fn load_scene<'a>(gpu: &'a gpu::Gpu, scene: gltf::Scene<'_>, buffers: &[gltf::bu
     let indices = indices_alloc.host_mut();
     let mut index_index = 0;
 
-    let mut materials_alloc = gpu.alloc(1)?;
+    let mut materials_alloc = gpu.alloc(material_indices.len())?;
+    let materials = materials_alloc.host_mut();
+    let mut textures = vec![];
+
+    let queue = gpu.create_queue(gpu::QueueType::Graphics)?;
+    let mut cmd_buf = queue.create_buffer()?;
+    for (index, src) in material_indices.values() {
+        materials[*index] = load_material(
+            gpu, src, &mut cmd_buf, tex_descriptors, tex_offset, images, &mut textures)?;
+    }
+    let queue_submit = queue.submit_no_signal(cmd_buf)?;
 
     visit_meshes(scene.nodes(), |_node, mesh| {
         // TODO: use node.transform(), also use parent transform
@@ -95,6 +239,10 @@ fn load_scene<'a>(gpu: &'a gpu::Gpu, scene: gltf::Scene<'_>, buffers: &[gltf::bu
                 *dst = src + index_offset;
             }
 
+            let (mat, _) = material_indices.get(&prim.material().index().unwrap())
+                .expect("material index not in map");
+            let mat = u32::try_from(*mat).expect("too many materials");
+
             for (pos, uv, nor) in izip!(
                 reader.read_positions().unwrap().into_iter(),
                 reader.read_tex_coords(0).unwrap().into_f32().into_iter(),
@@ -105,7 +253,7 @@ fn load_scene<'a>(gpu: &'a gpu::Gpu, scene: gltf::Scene<'_>, buffers: &[gltf::bu
                 let nor = Vec3::from_array(nor);
                 let vert = Vertex(
                     pos,
-                    0,  // TODO: material
+                    mat,
                     uv,
                     [f16::from_f32(nor.x), f16::from_f32(nor.y), f16::from_f32(nor.z), f16::default()],
                 );
@@ -116,20 +264,25 @@ fn load_scene<'a>(gpu: &'a gpu::Gpu, scene: gltf::Scene<'_>, buffers: &[gltf::bu
         Ok(())
     })?;
 
+    queue_submit.wait();
+
     Ok(Scene {
         vertices: vertices_alloc,
         indices: indices_alloc,
         materials: materials_alloc,
-        textures: vec![],
+        textures,
     })
 }
 
-pub fn load_gltf<'a>(gpu: &'a gpu::Gpu, path: impl AsRef<Path>) -> Result<Model<'a>> {
+pub fn load_gltf<'a>(gpu: &'a gpu::Gpu, path: impl AsRef<Path>,
+                     tex_descriptors: &mut gpu::DescriptorHeap<'a>,
+                     mut tex_offset: u16) -> Result<Model<'a>> {
     let start = std::time::Instant::now();
-    let (document, buffers, _images) = gltf::import(path)?;
+    let (document, buffers, images) = gltf::import(path)?;
     let mut scenes = vec![];
     for scene in document.scenes() {
-        scenes.push(load_scene(gpu, scene, &buffers)?);
+        scenes.push(load_scene(
+            gpu, scene, &buffers, &images, tex_descriptors, &mut tex_offset)?);
     }
     println!("Loaded model in {} seconds", start.elapsed().as_secs_f64());
     Ok(Model {

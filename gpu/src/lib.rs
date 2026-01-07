@@ -153,6 +153,7 @@ pub enum TextureType {
 #[repr(i32)]
 pub enum Format {
     R8UNorm = vk::Format::R8_UNORM.as_raw(),
+    RG8UNorm = vk::Format::R8G8_UNORM.as_raw(),
     RGBA8UNorm = vk::Format::R8G8B8A8_UNORM.as_raw(),
     Depth32Float = vk::Format::D32_SFLOAT.as_raw(),
 }
@@ -668,6 +669,7 @@ impl<'a> Texture<'a> {
     fn aspect_flags(format: Format) -> vk::ImageAspectFlags {
         match format {
             Format::R8UNorm => vk::ImageAspectFlags::COLOR,
+            Format::RG8UNorm => vk::ImageAspectFlags::COLOR,
             Format::RGBA8UNorm => vk::ImageAspectFlags::COLOR,
             Format::Depth32Float => vk::ImageAspectFlags::DEPTH,
         }
