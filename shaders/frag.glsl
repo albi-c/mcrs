@@ -51,8 +51,8 @@ vec3 getLight(in vec3 normal, in vec3 viewDir, float specExp, float metallic, in
     vec3 halfDir = normalize(lightDir + viewDir);
     float intSpec = pow(max(dot(normal, halfDir), 0.0), max(specExp, 1.0) * 12.0) * metallic;
     float distance = length(light.posAndIntensity.xyz - inWorldPos);
-    specular = light.color.rgb * intSpec / max(pow(distance, 1.1), 1.0) * light.posAndIntensity.w * 0.7;
-    return light.color.rgb * intDiff / max(pow(distance, 1.5), 1.0) * light.posAndIntensity.w;
+    specular = light.color.rgb * intSpec / max(pow(distance, 0.9), 1.0) * light.posAndIntensity.w * 0.7;
+    return light.color.rgb * intDiff / max(pow(distance, 1.2), 1.0) * light.posAndIntensity.w * 0.8;
 }
 
 void main() {
@@ -92,12 +92,14 @@ void main() {
     vec3 diffuseBase = sampleDiffuse.rgb * diffuse;
     vec3 resultColor = diffuseBase * intensityAmbient;
 
+    vec3 normal = inNormal;
+
     uint lightCount = data.frag.lightCount;
     FragDataLights lights = data.frag.lights;
     vec3 viewDir = normalize(data.frag.viewPos.xyz - inWorldPos);
     for (uint i = 0; i < lightCount; i++) {
         vec3 specular;
-        resultColor += diffuseBase * getLight(inNormal, viewDir, specularExp, sampleMetallic, lights.data[i], specular);
+        resultColor += diffuseBase * getLight(normal, viewDir, specularExp, sampleMetallic, lights.data[i], specular);
         resultColor += specular;
     }
 

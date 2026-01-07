@@ -744,16 +744,6 @@ impl<'a> Drop for Texture<'a> {
 }
 
 #[derive(Debug)]
-pub struct DepthStencilState<'a> {
-    gpu: &'a Gpu,
-}
-
-#[derive(Debug)]
-pub struct BlendState<'a> {
-    gpu: &'a Gpu,
-}
-
-#[derive(Debug)]
 pub struct SubmitWait<'a>(vk::Semaphore, u64, &'a Gpu, Box<[Box<dyn Debug + 'a>]>);
 
 impl<'a> Drop for SubmitWait<'a> {
@@ -974,12 +964,6 @@ impl<'a> CommandBuffer<'a> {
     // pub fn set_pipeline(&mut self, pipeline: &Pipeline<'_>) {
     //     unsafe { self.gpu.device.cmd_bind_pipeline(self.buffer, pipeline.bind_point, pipeline.pipeline) };
     // }
-    pub fn set_depth_stencil_state(&mut self, state: &DepthStencilState<'a>) {
-        todo!()
-    }
-    pub fn set_blend_state(&mut self, state: &BlendState<'_>) {
-        todo!()
-    }
 
     pub fn bind_shaders<const N: usize>(&mut self, shaders: [&Shader<'_>; N]) {
         self.unbind_shaders_raw(&[vk::ShaderStageFlags::GEOMETRY]);
@@ -1588,13 +1572,6 @@ impl Gpu {
     //                                         raster_desc: RasterDesc) -> Pipeline<'_> {
     //     todo!()
     // }
-
-    pub fn create_depth_stencil_state(&self, desc: DepthStencilDesc) -> DepthStencilState<'_> {
-        todo!()
-    }
-    pub fn create_blend_state(&self, desc: BlendDesc) -> BlendState<'_> {
-        todo!()
-    }
 
     pub fn create_queue(&self, ty: QueueType) -> Result<Queue<'_>> {
         Ok(match ty {
