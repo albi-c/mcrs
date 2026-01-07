@@ -1,6 +1,6 @@
 use std::cell::Cell;
 use std::marker::PhantomData;
-use bytemuck::{Pod, Zeroable};
+use bytemuck::Pod;
 use anyhow::{anyhow, Result};
 use crate::{Allocation, DevicePointer, MemoryAllocation, MemoryAllocator};
 

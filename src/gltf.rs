@@ -1,18 +1,43 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::path::Path;
 use anyhow::{anyhow, Result};
+use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec3, Vec4};
 use half::f16;
 use itertools::izip;
 use gpu::{MemoryAllocation, MemoryAllocator};
 use crate::application::{create_texture, Material, Vertex};
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+struct TextureInfo {
+    width: u32,
+    height: u32,
+    offset: u32,
+    components: u32,
+}
+
+impl TextureInfo {
+    fn new(width: u32, height: u32, offset: u32, components: u32) -> Self {
+        Self {
+            width,
+            height,
+            offset,
+            components,
+        }
+    }
+}
+
 pub struct Scene<'a> {
     pub vertices: gpu::Allocation<'a, Vertex>,
     pub indices: gpu::Allocation<'a, u32>,
     pub materials: gpu::Allocation<'a, Material>,
     pub textures: Vec<gpu::Texture<'a>>,
+    texture_offset: u16,
+    texture_info: Vec<TextureInfo>,
+    texture_data: Vec<u8>,
 }
 
 pub struct Model<'a> {
@@ -82,7 +107,8 @@ fn shrink_to_gb(pixel_size: usize, src: &[u8]) -> Vec<u8> {
 
 fn load_material<'a, 'b>(gpu: &'a gpu::Gpu, mat: &gltf::Material<'_>, cmd_buf: &mut gpu::CommandBuffer<'b>,
                          tex_descriptors: &mut gpu::DescriptorHeap<'a>, tex_offset: &mut u16,
-                         images: &[gltf::image::Data], textures: &mut Vec<gpu::Texture<'a>>) -> Result<Material> where 'a: 'b {
+                         images: &[gltf::image::Data], textures: &mut Vec<gpu::Texture<'a>>,
+                         tex_info: &mut Vec<TextureInfo>, tex_data: &mut Vec<u8>) -> Result<Material> where 'a: 'b {
     let pbr = mat.pbr_metallic_roughness();
 
     let (tex_diffuse, base_tex) = if let Some(info) = pbr.base_color_texture() {
@@ -97,7 +123,9 @@ fn load_material<'a, 'b>(gpu: &'a gpu::Gpu, mat: &gltf::Material<'_>, cmd_buf: &
         } else {
             return Err(anyhow!("invalid diffuse texture format: {:?}", tex.format));
         };
-
+        tex_info.push(TextureInfo::new(tex.width, tex.height, u32::try_from(tex_data.len())
+            .expect("too much texture data"), 4));
+        tex_data.extend_from_slice(&data);
         let (tex_diffuse, tex) = add_texture(
             gpu, gpu::Format::RGBA8UNorm, tex.width, tex.height, &data,
             cmd_buf, tex_descriptors, tex_offset)?;
@@ -119,6 +147,9 @@ fn load_material<'a, 'b>(gpu: &'a gpu::Gpu, mat: &gltf::Material<'_>, cmd_buf: &
         } else {
             return Err(anyhow!("invalid normal texture format: {:?}", tex.format));
         };
+        tex_info.push(TextureInfo::new(tex.width, tex.height, u32::try_from(tex_data.len())
+            .expect("too much texture data"), 4));
+        tex_data.extend_from_slice(&data);
         let (tex_normal, tex) = add_texture(
             gpu, gpu::Format::RGBA8UNorm, tex.width, tex.height, &data,
             cmd_buf, tex_descriptors, tex_offset)?;
@@ -142,6 +173,9 @@ fn load_material<'a, 'b>(gpu: &'a gpu::Gpu, mat: &gltf::Material<'_>, cmd_buf: &
         } else {
             return Err(anyhow!("invalid metallic_roughness texture format: {:?}", tex.format));
         };
+        tex_info.push(TextureInfo::new(tex.width, tex.height, u32::try_from(tex_data.len())
+            .expect("too much texture data"), 2));
+        tex_data.extend_from_slice(&data);
         let (tex_metallic_roughness, tex) = add_texture(
             gpu, gpu::Format::RG8UNorm, tex.width, tex.height, &data,
             cmd_buf, tex_descriptors, tex_offset)?;
@@ -171,6 +205,10 @@ fn load_material<'a, 'b>(gpu: &'a gpu::Gpu, mat: &gltf::Material<'_>, cmd_buf: &
 fn load_scene<'a>(gpu: &'a gpu::Gpu, scene: gltf::Scene<'_>, buffers: &[gltf::buffer::Data],
                   images: &[gltf::image::Data], tex_descriptors: &mut gpu::DescriptorHeap<'a>,
                   tex_offset: &mut u16) -> Result<Scene<'a>> {
+    let start_tex_offset = *tex_offset;
+    let mut tex_info = vec![];
+    let mut tex_data = vec![];
+
     let mut vertex_count = 0;
     let mut index_count = 0;
     let mut material_indices = HashMap::new();
@@ -220,7 +258,8 @@ fn load_scene<'a>(gpu: &'a gpu::Gpu, scene: gltf::Scene<'_>, buffers: &[gltf::bu
     let mut cmd_buf = queue.create_buffer()?;
     for (index, src) in material_indices.values() {
         materials[*index] = load_material(
-            gpu, src, &mut cmd_buf, tex_descriptors, tex_offset, images, &mut textures)?;
+            gpu, src, &mut cmd_buf, tex_descriptors, tex_offset, images,
+            &mut textures, &mut tex_info, &mut tex_data)?;
     }
     let queue_submit = queue.submit_no_signal(cmd_buf)?;
 
@@ -271,244 +310,137 @@ fn load_scene<'a>(gpu: &'a gpu::Gpu, scene: gltf::Scene<'_>, buffers: &[gltf::bu
         indices: indices_alloc,
         materials: materials_alloc,
         textures,
+        texture_offset: start_tex_offset,
+        texture_info: tex_info,
+        texture_data: tex_data,
     })
 }
 
-pub fn load_gltf<'a>(gpu: &'a gpu::Gpu, path: impl AsRef<Path>,
-                     tex_descriptors: &mut gpu::DescriptorHeap<'a>,
-                     mut tex_offset: u16) -> Result<Model<'a>> {
-    let start = std::time::Instant::now();
-    let (document, buffers, images) = gltf::import(path)?;
-    let mut scenes = vec![];
-    for scene in document.scenes() {
-        scenes.push(load_scene(
-            gpu, scene, &buffers, &images, tex_descriptors, &mut tex_offset)?);
+impl<'a> Model<'a> {
+    pub fn load(gpu: &'a gpu::Gpu, path: impl AsRef<Path>,
+                tex_descriptors: &mut gpu::DescriptorHeap<'a>,
+                mut tex_offset: u16) -> Result<Self> {
+        let start = std::time::Instant::now();
+        let (document, buffers, images) = gltf::import(path)?;
+        let mut scenes = vec![];
+        for scene in document.scenes() {
+            scenes.push(load_scene(
+                gpu, scene, &buffers, &images, tex_descriptors, &mut tex_offset)?);
+        }
+        println!("Loaded model in {} seconds", start.elapsed().as_secs_f64());
+        Ok(Self {
+            scenes,
+        })
     }
-    println!("Loaded model in {} seconds", start.elapsed().as_secs_f64());
-    Ok(Model {
-        scenes,
-    })
+
+    pub fn serialize(&self, dst: &mut impl Write) -> Result<()> {
+        dst.write(&self.scenes.len().to_le_bytes())?;
+        for scene in &self.scenes {
+            scene.serialize(dst)?;
+        }
+        Ok(())
+    }
+
+    pub fn deserialize(gpu: &'a gpu::Gpu, tex_descriptors: &mut gpu::DescriptorHeap<'a>,
+                       src: &mut impl Read) -> Result<Self> {
+        let mut count = [0usize];
+        src.read_exact(bytemuck::cast_slice_mut(&mut count))?;
+        let mut scenes = vec![];
+        for _ in 0..count[0] {
+            scenes.push(Scene::deserialize(gpu, tex_descriptors, src)?);
+        }
+        Ok(Self {
+            scenes,
+        })
+    }
 }
 
-// use std::collections::HashMap;
-// use std::path::Path;
-// use std::sync::Arc;
-// use anyhow::{anyhow, Result};
-// use easy_gltf::model::Mode;
-// use glam::{Vec2, Vec3, Vec4};
-// use half::f16;
-// use image::EncodableLayout;
-// use itertools::Itertools;
-// use gpu::{CommandBuffer, MemoryAllocation, MemoryAllocator};
-// use crate::application::{create_texture, Material, Vertex};
-//
-// pub struct Scene<'a> {
-//     pub indices: gpu::Allocation<'a, u32>,
-//     pub vertices: gpu::Allocation<'a, Vertex>,
-//     pub materials: gpu::Allocation<'a, Material>,
-//     pub textures: Vec<gpu::Texture<'a>>,
-// }
-//
-// pub struct Model<'a> {
-//     pub scenes: Vec<Scene<'a>>,
-// }
-//
-// macro_rules! convert_vec {
-//     (2 $vec:expr) => {
-//         {
-//             let vec = $vec;
-//             Vec2::new(vec.x, vec.y)
-//         }
-//     };
-//     (3 $vec:expr) => {
-//         {
-//             let vec = $vec;
-//             Vec3::new(vec.x, vec.y, vec.z)
-//         }
-//     };
-//     (4 $vec:expr) => {
-//         {
-//             let vec = $vec;
-//             Vec4::new(vec.x, vec.y, vec.z, vec.w)
-//         }
-//     };
-// }
-//
-// fn add_texture<'a, 'b>(gpu: &'a gpu::Gpu, format: gpu::Format, width: u32, height: u32, data: &[u8],
-//                        cmd_buf: &mut CommandBuffer<'b>, tex_descriptors: &mut gpu::DescriptorHeap<'a>,
-//                        tex_offset: &mut u16) -> Result<(u16, gpu::Texture<'a>)> where 'a: 'b {
-//     let alloc = gpu.allocator().alloc_data(data)?;
-//     let tex = create_texture(gpu, (width, height), alloc, format, cmd_buf)?;
-//     let tex_index = *tex_offset;
-//     tex.view_descriptor(&mut tex_descriptors[tex_index as usize])?;
-//     *tex_offset += 1;
-//     Ok((tex_index, tex))
-// }
-//
-// fn load_materials<'a, 'b>(material_iter: impl IntoIterator<Item = (&'b easy_gltf::Material, u32)>, count: usize, gpu: &'a gpu::Gpu,
-//                           tex_descriptors: &mut gpu::DescriptorHeap<'a>, tex_offset: &mut u16) -> Result<(Vec<gpu::Texture<'a>>, gpu::Allocation<'a, Material>)> {
-//     let mut textures = vec![];
-//     let queue = gpu.create_queue(gpu::QueueType::Graphics)?;
-//     let mut cmd_buf = queue.create_buffer()?;
-//
-//     let mut materials = gpu.alloc::<Material>(count)?;
-//     for (material, index) in material_iter.into_iter().sorted_unstable_by_key(|(_, i)| *i) {
-//         // TODO: emissive
-//         let pbr = &material.pbr;
-//
-//         let (tex_diffuse, prev_tex) = if let Some(tex) = &pbr.base_color_texture {
-//             let (tex_diffuse, tex) = add_texture(
-//                 gpu, gpu::Format::RGBA8UNorm, tex.width(), tex.height(),
-//                 tex.as_bytes(), &mut cmd_buf, tex_descriptors, tex_offset)?;
-//             textures.push(tex);
-//             (tex_diffuse, tex_diffuse)
-//         } else {
-//             ((1 << 15) | *tex_offset - 1, *tex_offset - 1)
-//         };
-//
-//         let (tex_normal, normal_factor) = if let Some(normals) = &material.normal {
-//             let tex = &normals.texture;
-//             let src_data = tex.as_bytes();
-//             let pixel_count = tex.width() as usize * tex.height() as usize;
-//             let mut data = vec![0u8; pixel_count * 4];
-//             let mut si = 0;
-//             let mut di = 0;
-//             for _ in 0..pixel_count {
-//                 data[di + 0] = src_data[si + 0];
-//                 data[di + 1] = src_data[si + 1];
-//                 data[di + 2] = src_data[si + 2];
-//                 data[di + 3] = 0;
-//                 si += 3;
-//                 di += 4;
-//             }
-//             let (tex_normal, tex) = add_texture(
-//                 gpu, gpu::Format::RGBA8UNorm, tex.width(), tex.height(),
-//                 &data, &mut cmd_buf, tex_descriptors, tex_offset)?;
-//             textures.push(tex);
-//             (tex_normal - prev_tex, normals.factor)
-//         } else {
-//             (0, 0.0)
-//         };
-//
-//         let tex_metallic = if let Some(tex) = &pbr.metallic_texture {
-//             let (tex_metallic, tex) = add_texture(
-//                 gpu, gpu::Format::R8UNorm, tex.width(), tex.height(),
-//                 tex.as_bytes(), &mut cmd_buf, tex_descriptors, tex_offset)?;
-//             textures.push(tex);
-//             tex_metallic - prev_tex
-//         } else {
-//             0
-//         };
-//
-//         let tex_roughness = if let Some(tex) = &pbr.roughness_texture {
-//             let (tex_roughness, tex) = add_texture(
-//                 gpu, gpu::Format::R8UNorm, tex.width(), tex.height(),
-//                 tex.as_bytes(), &mut cmd_buf, tex_descriptors, tex_offset)?;
-//             textures.push(tex);
-//             tex_roughness - prev_tex
-//         } else {
-//             0
-//         };
-//
-//         let mut diffuse_and_normal = convert_vec!(4 pbr.base_color_factor);
-//         diffuse_and_normal.w = normal_factor;
-//
-//         let mat = Material {
-//             tex_offsets: Material::pack_tex_offsets(tex_normal, tex_metallic, tex_roughness),
-//             tex_diffuse,
-//
-//             // ambient is unused
-//             ambient_and_roughness: Material::pack_vec4(Vec4::new(0.0, 0.0, 0.0, pbr.roughness_factor)),
-//             diffuse_and_normal: Material::pack_vec4(diffuse_and_normal),
-//             // specular is unused
-//             specular_and_exp: Material::pack_vec4(Vec4::new(0.0, 0.0, 0.0, pbr.metallic_factor)),
-//         };
-//         materials.host_mut()[index as usize] = mat;
-//     }
-//
-//     queue.submit_no_signal(cmd_buf)?.wait();
-//
-//     Ok((textures, materials))
-// }
-//
-// fn load_scene<'a>(scene: easy_gltf::Scene, gpu: &'a gpu::Gpu,
-//                   tex_descriptors: &mut gpu::DescriptorHeap<'a>, tex_offset: &mut u16) -> Result<Scene<'a>> {
-//     let mut index_count = 0;
-//     let mut vertex_count = 0;
-//     let mut material_count = 0;
-//     let mut material_indices = HashMap::new();
-//     for model in &scene.models {
-//         match model.mode() {
-//             Mode::Triangles => {},
-//             _ => return Err(anyhow!("gltf model must be simple triangles")),
-//         }
-//         index_count += model.indices().ok_or_else(|| anyhow!("gltf model must have indices"))?.len();
-//         vertex_count += model.vertices().len();
-//         let material = model.material();
-//         if material_indices.try_insert(Arc::as_ptr(&material), (material, material_count)).is_ok() {
-//             material_count += 1;
-//         }
-//     }
-//
-//     let (textures, materials) = load_materials(
-//         material_indices
-//             .values()
-//             .map(|(mat, idx)| (mat.as_ref(), *idx)),
-//         material_count as usize,
-//         gpu,
-//         tex_descriptors,
-//         tex_offset
-//     )?;
-//
-//     let mut indices = gpu.alloc::<u32>(index_count)?;
-//     let mut vertices = gpu.alloc::<Vertex>(vertex_count)?;
-//
-//     let mut index_offset = 0;
-//     let mut vertex_offset = 0;
-//
-//     for model in scene.models {
-//         let material = material_indices.get(&Arc::as_ptr(&model.material())).unwrap().1;
-//
-//         let mod_indices = model.indices().unwrap();
-//         let mod_vertices = model.vertices();
-//
-//         // not a bug, should use vertex_offset
-//         let add_to_index = u32::try_from(vertex_offset)?;
-//         for (dst, src) in indices.host_mut()[index_offset..index_offset + mod_indices.len()]
-//             .iter_mut().zip(mod_indices.iter().copied()) {
-//             *dst = src + add_to_index;
-//         }
-//         index_offset += mod_indices.len();
-//
-//         for (dst, src) in vertices.host_mut()[vertex_offset..vertex_offset + mod_vertices.len()]
-//             .iter_mut().zip(mod_vertices.iter()) {
-//             let normal = convert_vec!(3 src.normal).normalize();
-//             *dst = Vertex(
-//                 convert_vec!(3 src.position),
-//                 material,
-//                 convert_vec!(2 src.tex_coords),
-//                 [f16::from_f32(normal.x), f16::from_f32(normal.y), f16::from_f32(normal.z), f16::default()],
-//             );
-//         }
-//         vertex_offset += mod_vertices.len();
-//     }
-//
-//     Ok(Scene {
-//         indices,
-//         vertices,
-//         materials,
-//         textures,
-//     })
-// }
-//
-// pub fn load_gltf<'a>(path: impl AsRef<Path>, gpu: &'a gpu::Gpu,
-//                      tex_descriptors: &mut gpu::DescriptorHeap<'a>, mut tex_offset: u16) -> Result<Model<'a>> {
-//     let scenes = easy_gltf::load(path)
-//         .map_err(|e| anyhow!("failed to load gltf: {}", e))?;
-//
-//     Ok(Model {
-//         scenes: scenes.into_iter()
-//             .map(|scene| load_scene(scene, gpu, tex_descriptors, &mut tex_offset))
-//             .collect::<Result<_>>()?,
-//     })
-// }
+fn write_raw<T: Pod>(dst: &mut impl Write, data: &[T]) -> Result<()> {
+    dst.write(bytemuck::cast_slice(data))?;
+    Ok(())
+}
+
+fn read_raw<T: Pod>(src: &mut impl Read, data: &mut [T]) -> Result<()> {
+    src.read_exact(bytemuck::cast_slice_mut(data))?;
+    Ok(())
+}
+
+impl<'a> Scene<'a> {
+    pub fn serialize(&self, dst: &mut impl Write) -> Result<()> {
+        dst.write(bytemuck::cast_slice(&[
+            u32::try_from(self.vertices.len())?,
+            u32::try_from(self.indices.len())?,
+            u32::try_from(self.materials.len())?,
+        ]))?;
+        dst.write(bytemuck::cast_slice(&[
+            u16::try_from(self.textures.len())?,
+            self.texture_offset,
+        ]))?;
+        dst.write(bytemuck::cast_slice(&[self.texture_data.len()]))?;
+
+        write_raw(dst, &self.vertices.host())?;
+        write_raw(dst, &self.indices.host())?;
+        write_raw(dst, &self.materials.host())?;
+        write_raw(dst, &self.texture_info)?;
+        write_raw(dst, &self.texture_data)?;
+
+        Ok(())
+    }
+
+    pub fn deserialize(gpu: &'a gpu::Gpu, tex_descriptors: &mut gpu::DescriptorHeap<'a>,
+                       src: &mut impl Read) -> Result<Self> {
+        let mut lengths = [0u32; 3];
+        src.read_exact(bytemuck::cast_slice_mut(&mut lengths))?;
+        let mut tex_lengths = [0u16; 2];
+        src.read_exact(bytemuck::cast_slice_mut(&mut tex_lengths))?;
+        let mut tex_info_len = [0usize];
+        src.read_exact(bytemuck::cast_slice_mut(&mut tex_info_len))?;
+        let [len_vertices, len_indices, len_materials] = lengths;
+        let [len_textures, texture_offset] = tex_lengths;
+        let [len_tex_data] = tex_info_len;
+
+        let mut vertices = gpu.alloc(len_vertices as usize)?;
+        let mut indices = gpu.alloc(len_indices as usize)?;
+        let mut materials = gpu.alloc(len_materials as usize)?;
+        let mut textures = vec![];
+        let mut texture_info = vec![TextureInfo::zeroed(); len_textures as usize];
+        let mut texture_data = vec![0u8; len_tex_data];
+
+        read_raw(src, vertices.host_mut())?;
+        read_raw(src, indices.host_mut())?;
+        read_raw(src, materials.host_mut())?;
+        read_raw(src, &mut texture_info)?;
+        read_raw(src, &mut texture_data)?;
+
+        let queue = gpu.create_queue(gpu::QueueType::Graphics)?;
+        let mut cmd_buf = queue.create_buffer()?;
+
+        let mut tex_offset = texture_offset;
+        for &info in &texture_info {
+            let format = match info.components {
+                2 => gpu::Format::RG8UNorm,
+                4 => gpu::Format::RGBA8UNorm,
+                _ => return Err(anyhow!("invalid texture component count: {}", info.components)),
+            };
+            let offset = info.offset as usize;
+            let length = info.width as usize * info.height as usize * info.components as usize;
+            let data = &texture_data[offset..offset + length];
+            let (_, tex) = add_texture(
+                gpu, format, info.width, info.height, data,
+                &mut cmd_buf, tex_descriptors, &mut tex_offset)?;
+            textures.push(tex);
+        }
+
+        queue.submit_no_signal(cmd_buf)?.wait();
+
+        Ok(Self {
+            vertices,
+            indices,
+            materials,
+            textures,
+            texture_offset,
+            texture_info,
+            texture_data,
+        })
+    }
+}

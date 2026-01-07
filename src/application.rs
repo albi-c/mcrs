@@ -158,14 +158,25 @@ impl<'a> Application<'a> {
 
         queue.submit_no_signal(command_buffer)?.wait();
 
-        let gltf = gltf::load_gltf(
-            gpu, "models/Sponza_gltf/glTF/Sponza.gltf",
-            &mut tex_descriptors, 1)?;
+        let cache = "models/sponza_gltf.cache";
+        let gltf = if fs::exists(cache)? {
+            let mut file = fs::File::open(cache)?;
+            gltf::Model::deserialize(gpu, &mut tex_descriptors, &mut file)?
+        } else {
+            let gltf = gltf::Model::load(
+                gpu, "models/Sponza_gltf/glTF/Sponza.gltf",
+                &mut tex_descriptors, 1)?;
+            let mut file = fs::File::create(cache)?;
+            gltf.serialize(&mut file)?;
+            gltf
+        };
 
         Ok(Self {
             gpu,
-            vertex_shader: gpu.create_shader(&fs::read("shaders/vert.spv")?, gpu::ShaderStage::Vertex)?,
-            pixel_shader: gpu.create_shader(&fs::read("shaders/frag.spv")?, gpu::ShaderStage::Pixel)?,
+            vertex_shader: gpu.create_shader(&fs::read("shaders/vert.spv")?,
+                                             gpu::ShaderStage::Vertex)?,
+            pixel_shader: gpu.create_shader(&fs::read("shaders/frag.spv")?,
+                                            gpu::ShaderStage::Pixel)?,
             queue,
             frame_semaphore: gpu.create_semaphore(0)?,
             frame_arenas: (0..FRAMES_IN_FLIGHT)
