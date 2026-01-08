@@ -23,11 +23,11 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Fra
 };
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer FragData {
-    vec4 viewPos;
+    float viewX;
+    float viewY;
+    float viewZ;
     uint lightCount;
-    uint _padding1[3];
     FragDataLights lights;
-    uint _padding2[2];
 };
 
 layout(std430, push_constant) uniform Data {
@@ -45,14 +45,14 @@ vec4 readPacked(uint packed) {
     return color / 255.0;
 }
 
-vec3 getLight(in vec3 normal, in vec3 viewDir, float specExp, float metallic, in Light light, out vec3 specular) {
+vec3 getLight(in vec3 normal, in vec3 viewDir, float specExp, float metallic, float roughness, in Light light, out vec3 specular) {
     vec3 lightDir = normalize(light.posAndIntensity.xyz - inWorldPos);
     float intDiff = max(0.0, dot(normal, lightDir));
     vec3 halfDir = normalize(lightDir + viewDir);
     float intSpec = pow(max(dot(normal, halfDir), 0.0), max(specExp, 1.0) * 12.0) * metallic;
     float distance = length(light.posAndIntensity.xyz - inWorldPos);
-    specular = light.color.rgb * intSpec / max(pow(distance, 0.8), 1.0) * light.posAndIntensity.w * 0.7;
-    return light.color.rgb * intDiff / max(pow(distance, 1.1), 1.0) * light.posAndIntensity.w * 0.8;
+    specular = light.color.rgb * intSpec / max(pow(distance, 0.95), 1.0) * light.posAndIntensity.w * 1.0;
+    return light.color.rgb * intDiff / max(pow(distance, 1.4), 1.0) * light.posAndIntensity.w * 1.2;
 }
 
 void main() {
@@ -94,12 +94,14 @@ void main() {
 
     vec3 normal = inNormal;
 
-    uint lightCount = data.frag.lightCount;
-    FragDataLights lights = data.frag.lights;
-    vec3 viewDir = normalize(data.frag.viewPos.xyz - inWorldPos);
+    FragData d = data.frag;
+    uint lightCount = d.lightCount;
+    FragDataLights lights = d.lights;
+    vec3 viewPos = vec3(d.viewX, d.viewY, d.viewZ);
+    vec3 viewDir = normalize(viewPos - inWorldPos);
     for (uint i = 0; i < lightCount; i++) {
         vec3 specular;
-        resultColor += diffuseBase * getLight(normal, viewDir, specularExp, sampleMetallic, lights.data[i], specular);
+        resultColor += diffuseBase * getLight(normal, viewDir, specularExp, sampleMetallic, roughness, lights.data[i], specular);
         resultColor += specular;
     }
 

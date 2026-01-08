@@ -155,6 +155,7 @@ pub struct Application<'a> {
     sampler_descriptors: gpu::DescriptorHeap<'a>,
 
     gltf: gltf::Model<'a>,
+    lights: gpu::Allocation<'a, Light>,
 
     keys: HashMap<PhysicalKey, bool>,
     camera_pos: Vec3,
@@ -183,6 +184,31 @@ impl<'a> Application<'a> {
             "models/Sponza_gltf/glTF/Sponza.gltf", "models/sponza_gltf.cache",
             gpu, &mut tex_descriptors)?;
 
+        let intensity = 1.5;
+        let color = Vec3A::new(0.85, 0.65, 0.05);
+        let lights = gpu.allocator().alloc_data(&[
+            Light {
+                pos: Vec3::new(-6.2, 1.3, -2.2),
+                intensity,
+                color,
+            },
+            Light {
+                pos: Vec3::new(-6.2, 1.3, 1.4),
+                intensity,
+                color,
+            },
+            Light {
+                pos: Vec3::new(4.9, 1.3, 1.4),
+                intensity,
+                color,
+            },
+            Light {
+                pos: Vec3::new(4.9, 1.3, -2.2),
+                intensity,
+                color,
+            },
+        ])?;
+
         Ok(Self {
             gpu,
             shaders: Shaders {
@@ -209,6 +235,7 @@ impl<'a> Application<'a> {
             sampler_descriptors,
 
             gltf,
+            lights,
 
             keys: HashMap::new(),
             camera_pos: Vec3::new(0.0, 0.0, 0.0),
@@ -331,40 +358,13 @@ impl<'a> Application<'a> {
             self.gltf.scenes[0].materials.device(),
         )])?;
 
-        let intensity = 1.5;
-        let color = Vec3A::new(0.85, 0.65, 0.05);
-        let lights = arena.alloc_data(&[
-            Light {
-                pos: Vec3::new(-6.2, 1.3, -2.2),
-                intensity,
-                color,
-            },
-            Light {
-                pos: Vec3::new(-6.2, 1.3, 1.4),
-                intensity,
-                color,
-            },
-            Light {
-                pos: Vec3::new(4.9, 1.3, 1.4),
-                intensity,
-                color,
-            },
-            Light {
-                pos: Vec3::new(4.9, 1.3, -2.2),
-                intensity,
-                color,
-            },
-        ])?;
-
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-        struct PixelData(Vec3A, u32, [u32; 3], gpu::DevicePointer, u64);
+        struct PixelData(Vec3, u32, gpu::DevicePointer);
         let pixel_data = arena.alloc_data(&[PixelData(
-            self.camera_pos.to_vec3a(),
-            lights.len() as u32,
-            [0; 3],
-            lights.device(),
-            0,
+            self.camera_pos,
+            self.lights.len() as u32,
+            self.lights.device(),
         )])?;
 
         let mut command_buffer = self.queue.create_buffer()?;
