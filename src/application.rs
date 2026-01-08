@@ -128,18 +128,29 @@ fn load_gltf_cached<'a>(path: impl AsRef<Path>, cache_path: impl AsRef<Path>, gp
     }
 }
 
+struct WindowSizedTextures<'a> {
+    pub depth_buffer: gpu::Texture<'a>,
+    pub post_color: gpu::Texture<'a>,
+}
+
+struct Shaders<'a> {
+    pub vertex: gpu::Shader<'a>,
+    pub pixel: gpu::Shader<'a>,
+
+    pub vertex_post: gpu::Shader<'a>,
+    pub pixel_post: gpu::Shader<'a>,
+}
+
 pub struct Application<'a> {
     gpu: &'a gpu::Gpu,
-    vertex_shader: gpu::Shader<'a>,
-    pixel_shader: gpu::Shader<'a>,
+    shaders: Shaders<'a>,
     queue: gpu::Queue<'a>,
     frame_semaphore: gpu::Semaphore<'a>,
     frame_arenas: Box<[gpu::Arena<'a>]>,
     next_frame: u64,
     last_time: Option<f64>,
 
-    tex: gpu::Texture<'a>,
-    depth_buffer: gpu::Texture<'a>,
+    textures: WindowSizedTextures<'a>,
     tex_descriptors: gpu::DescriptorHeap<'a>,
     sampler_descriptors: gpu::DescriptorHeap<'a>,
 
@@ -157,14 +168,11 @@ impl<'a> Application<'a> {
 
         let mut command_buffer = queue.create_buffer()?;
 
-        let tex = load_texture("models/viking_room/viking_room.png", gpu, &mut command_buffer)?;
-
-        let depth_buffer = Self::create_depth_buffer(gpu, ctx, &mut command_buffer)?;
+        let textures = Self::create_window_sized(gpu, ctx, &mut command_buffer)?;
 
         let mut tex_descriptors = gpu.alloc_texture_descriptor_heap()?;
         let mut sampler_descriptors = gpu.alloc_sampler_descriptor_heap()?;
 
-        tex.view_descriptor(&mut tex_descriptors[0])?;
         gpu.sampler_descriptor(gpu::SamplerDesc {
             ..Default::default()
         }, &mut sampler_descriptors[0])?;
@@ -177,10 +185,17 @@ impl<'a> Application<'a> {
 
         Ok(Self {
             gpu,
-            vertex_shader: gpu.create_shader(&fs::read("shaders/vert.spv")?,
-                                             gpu::ShaderStage::Vertex)?,
-            pixel_shader: gpu.create_shader(&fs::read("shaders/frag.spv")?,
-                                            gpu::ShaderStage::Pixel)?,
+            shaders: Shaders {
+                vertex: gpu.create_shader(&fs::read("shaders/vert.spv")?,
+                                          gpu::ShaderStage::Vertex)?,
+                pixel: gpu.create_shader(&fs::read("shaders/frag.spv")?,
+                                         gpu::ShaderStage::Pixel)?,
+
+                vertex_post: gpu.create_shader(&fs::read("shaders/vert_post.spv")?,
+                                               gpu::ShaderStage::Vertex)?,
+                pixel_post: gpu.create_shader(&fs::read("shaders/frag_post.spv")?,
+                                              gpu::ShaderStage::Pixel)?,
+            },
             queue,
             frame_semaphore: gpu.create_semaphore(0)?,
             frame_arenas: (0..FRAMES_IN_FLIGHT)
@@ -189,8 +204,7 @@ impl<'a> Application<'a> {
             next_frame: 1,
             last_time: None,
 
-            tex,
-            depth_buffer,
+            textures,
             tex_descriptors,
             sampler_descriptors,
 
@@ -203,17 +217,33 @@ impl<'a> Application<'a> {
         })
     }
 
-    fn create_depth_buffer<'b>(gpu: &'b gpu::Gpu, ctx: &dyn gpu::SwapchainContext,
-                               cmd_buf: &mut gpu::CommandBuffer<'_>) -> Result<gpu::Texture<'b>> {
+    fn create_tex<'b>(gpu: &'b gpu::Gpu, ctx: &dyn gpu::SwapchainContext,
+                      cmd_buf: &mut gpu::CommandBuffer<'_>, format: gpu::Format,
+                      usage: gpu::TextureUsageFlags, layout: gpu::TextureLayout) -> Result<gpu::Texture<'b>> {
         let dims = ctx.get_window_size();
         gpu.create_texture(gpu::TextureDesc {
             ty: gpu::TextureType::Tex2D,
             dimensions: (dims.0, dims.1, 1),
-            format: gpu::Format::Depth32Float,
-            usage: gpu::TextureUsageFlags::DepthStencilAttachment,
-            layout: gpu::TextureLayout::DepthStencilAttachmentOptimal,
+            format,
+            usage,
+            layout,
             ..Default::default()
         }, cmd_buf)
+    }
+
+    fn create_window_sized<'b>(gpu: &'b gpu::Gpu, ctx: &dyn gpu::SwapchainContext,
+                               cmd_buf: &mut gpu::CommandBuffer<'_>) -> Result<WindowSizedTextures<'b>> {
+        Ok(WindowSizedTextures {
+            depth_buffer: Self::create_tex(
+                gpu, ctx, cmd_buf, gpu::Format::Depth32Float,
+                gpu::TextureUsageFlags::DepthStencilAttachment, gpu::TextureLayout::DepthStencilAttachmentOptimal,
+            )?,
+            post_color: Self::create_tex(
+                gpu, ctx, cmd_buf, gpu::Format::RGBA8UNorm,
+                gpu::TextureUsageFlags::Sampled | gpu::TextureUsageFlags::ColorAttachment,
+                gpu::TextureLayout::General,
+            )?,
+        })
     }
 
     fn get_frame_arena(&self) -> &gpu::Arena<'_> {
@@ -273,6 +303,8 @@ impl<'a> Application<'a> {
             self.frame_semaphore.wait(self.next_frame - FRAMES_IN_FLIGHT)?;
         }
 
+        self.textures.post_color.view_descriptor(&mut self.tex_descriptors[0])?;
+
         let arena = self.get_frame_arena();
         arena.reset();
 
@@ -300,7 +332,7 @@ impl<'a> Application<'a> {
         )])?;
 
         let intensity = 1.5;
-        let color = Vec3A::new(0.9, 0.6, 0.0);
+        let color = Vec3A::new(0.85, 0.65, 0.05);
         let lights = arena.alloc_data(&[
             Light {
                 pos: Vec3::new(-6.2, 1.3, -2.2),
@@ -339,8 +371,15 @@ impl<'a> Application<'a> {
 
         let mut swapchain_target = self.gpu.next_swapchain_image(ctx, &mut command_buffer)?;
         swapchain_target.clear_value = gpu::ClearValue::Color([0.08, 0.0, 0.0, 1.0]);
+
+        let color_target = gpu::Target {
+            view: self.textures.post_color.view()?,
+            load_op: gpu::Load::Clear,
+            store_op: gpu::Store::Store,
+            clear_value: gpu::ClearValue::Color([0.08, 0.0, 0.0, 1.0]),
+        };
         let depth_target = gpu::Target {
-            view: self.depth_buffer.view()?,
+            view: self.textures.depth_buffer.view()?,
             load_op: gpu::Load::Clear,
             store_op: gpu::Store::Store,
             clear_value: gpu::ClearValue::DepthStencil(1.0, 0),
@@ -351,21 +390,44 @@ impl<'a> Application<'a> {
         let render_pass_desc = gpu::RenderPassDesc {
             cull: gpu::Cull::CW,
             depth_test_state: Some(&depth_test_desc),
-            color_targets: &[swapchain_target],
+            color_targets: &[color_target],
             depth_target: Some(&depth_target),
             ..Default::default()
         };
         command_buffer.begin_render_pass(&render_pass_desc);
-        command_buffer.bind_shaders([&self.vertex_shader, &self.pixel_shader]);
-         command_buffer.set_texture_heap(
-             Some(&self.tex_descriptors),
-             None,
-             Some(&self.sampler_descriptors),
-         );
+        command_buffer.bind_shaders([&self.shaders.vertex, &self.shaders.pixel]);
+        command_buffer.set_texture_heap(
+            Some(&self.tex_descriptors),
+            None,
+            Some(&self.sampler_descriptors),
+        );
         let indices = &self.gltf.scenes[0].indices;
         command_buffer.draw_indexed(
             vertex_data.device(), pixel_data.device(),
             indices.device(), indices.len() as u32, gpu::IndexType::U32);
+        command_buffer.end_render_pass();
+
+        #[repr(C)]
+        #[derive(Copy, Clone, Debug, Pod, Zeroable)]
+        struct PostPixelData(u32);
+        let post_pixel_data = arena.alloc_data(&[PostPixelData(
+            0,
+        )])?;
+        let post_pass_desc = gpu::RenderPassDesc {
+            cull: gpu::Cull::None,
+            color_targets: &[swapchain_target],
+            ..Default::default()
+        };
+        command_buffer.begin_render_pass(&post_pass_desc);
+        command_buffer.bind_shaders([&self.shaders.vertex_post, &self.shaders.pixel_post]);
+        command_buffer.set_texture_heap(
+            Some(&self.tex_descriptors),
+            None,
+            Some(&self.sampler_descriptors),
+        );
+        command_buffer.draw_instanced(
+            gpu::DevicePointer::null(), post_pixel_data.device(),
+            3, 1, 0, 0);
         command_buffer.end_render_pass();
 
         self.queue.submit(command_buffer, &self.frame_semaphore, self.next_frame)?;
@@ -379,11 +441,11 @@ impl<'a> Application<'a> {
     pub fn resize(&mut self, ctx: &dyn gpu::SwapchainContext) -> Result<()> {
         let mut command_buffer = self.queue.create_buffer()?;
 
-        let depth_buffer = Self::create_depth_buffer(self.gpu, ctx, &mut command_buffer)?;
+        let textures = Self::create_window_sized(self.gpu, ctx, &mut command_buffer)?;
 
         self.queue.submit_no_signal(command_buffer)?.wait();
 
-        self.depth_buffer = depth_buffer;
+        self.textures = textures;
 
         Ok(())
     }

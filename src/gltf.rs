@@ -387,6 +387,8 @@ fn read_raw<T: Pod>(src: &mut impl Read, data: &mut [T]) -> Result<()> {
 
 impl<'a> Scene<'a> {
     pub fn serialize(&self, dst: &mut impl Write) -> Result<()> {
+        assert_eq!(self.textures.len(), self.texture_info.len());
+
         dst.write(bytemuck::cast_slice(&[
             u32::try_from(self.vertices.len())?,
             u32::try_from(self.indices.len())?,
@@ -422,7 +424,7 @@ impl<'a> Scene<'a> {
         let mut vertices = gpu.alloc(len_vertices as usize)?;
         let mut indices = gpu.alloc(len_indices as usize)?;
         let mut materials = gpu.alloc(len_materials as usize)?;
-        let mut textures = vec![];
+        let mut textures = Vec::with_capacity(len_textures as usize);
         let mut texture_info = vec![TextureInfo::zeroed(); len_textures as usize];
         let mut texture_data = vec![0u8; len_tex_data];
 

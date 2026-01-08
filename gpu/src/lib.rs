@@ -706,7 +706,7 @@ impl<'a> Texture<'a> {
         self.gpu.descriptor_sizes.sampled_texture
     }
 
-    pub fn view_descriptor(&self, descriptor: &mut [u8]) -> Result<()> {
+    pub fn view_descriptor<'b>(&'a self, descriptor: &'b mut [u8]) -> Result<()> {
         assert_eq!(descriptor.len(), self.view_descriptor_size(),
                    "incorrect buffer size for texture descriptor");
 
