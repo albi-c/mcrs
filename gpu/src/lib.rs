@@ -648,6 +648,7 @@ pub struct Texture<'a> {
     ty: TextureType,
     image: vk::Image,
     aspect: vk::ImageAspectFlags,
+    mip_count: u32,
     allocation: vma::Allocation,
     gpu: &'a Gpu,
     view: Cell<vk::ImageView>,
@@ -682,7 +683,7 @@ impl<'a> Texture<'a> {
         } else {
             let subresource_range = vk::ImageSubresourceRange::builder()
                 .aspect_mask(self.aspect)
-                .level_count(1)
+                .level_count(self.mip_count)
                 .layer_count(1);
             let view_info = vk::ImageViewCreateInfo::builder()
                 .image(self.image)
@@ -906,6 +907,74 @@ impl<'a> CommandBuffer<'a> {
             .image_subresource(img_subresource);
         unsafe { self.gpu.device.cmd_copy_buffer_to_image(
             self.buffer, buffer, tex.image, vk::ImageLayout::GENERAL, &[img_copy]) };
+    }
+    fn image_mipmap_barrier(&mut self, tex: &Texture<'_>, mip_level: u32,
+                            dst_access: vk::AccessFlags, dst_stage: vk::PipelineStageFlags) {
+        let subresource = vk::ImageSubresourceRange::builder()
+            .aspect_mask(tex.aspect)
+            .base_array_layer(0)
+            .layer_count(1)
+            .level_count(1)
+            .base_mip_level(mip_level - 1);
+        let barrier = vk::ImageMemoryBarrier::builder()
+            .image(tex.image)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .subresource_range(subresource)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(dst_access);
+        unsafe { self.gpu.device.cmd_pipeline_barrier(
+            self.buffer, vk::PipelineStageFlags::TRANSFER, dst_stage,
+            vk::DependencyFlags::empty(), &[] as &[vk::MemoryBarrier],
+            &[] as &[vk::BufferMemoryBarrier], &[barrier],
+        ); }
+    }
+    pub fn copy_to_texture_mipmapped(&mut self, src: DevicePointer, tex: &Texture<'_>) {
+        assert_eq!(tex.ty, TextureType::Tex2D, "can only generate mipmaps for 2d textures");
+        self.copy_to_texture(src, tex);
+        let mut width = tex.dimensions.0;
+        let mut height = tex.dimensions.1;
+        for i in 1..tex.mip_count {
+            let new_width = (width / 2).max(1);
+            let new_height = (height / 2).max(1);
+            self.image_mipmap_barrier(
+                tex, i, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::TRANSFER);
+            let src_subresource = vk::ImageSubresourceLayers::builder()
+                .aspect_mask(tex.aspect)
+                .mip_level(i - 1)
+                .base_array_layer(0)
+                .layer_count(1);
+            let dst_subresource = vk::ImageSubresourceLayers::builder()
+                .aspect_mask(tex.aspect)
+                .mip_level(i)
+                .base_array_layer(0)
+                .layer_count(1);
+            let blit = vk::ImageBlit::builder()
+                .src_offsets([vk::Offset3D::default(), vk::Offset3D {
+                    x: width as i32,
+                    y: height as i32,
+                    z: 1,
+                }])
+                .src_subresource(src_subresource)
+                .dst_offsets([vk::Offset3D::default(), vk::Offset3D {
+                    x: new_width as i32,
+                    y: new_height as i32,
+                    z: 1,
+                }])
+                .dst_subresource(dst_subresource);
+            unsafe { self.gpu.device.cmd_blit_image(
+                self.buffer,
+                tex.image, vk::ImageLayout::GENERAL,
+                tex.image, vk::ImageLayout::GENERAL,
+                &[blit], vk::Filter::LINEAR,
+            ); }
+            width = new_width;
+            height = new_height;
+        }
+        self.image_mipmap_barrier(
+            tex, tex.mip_count - 1, vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::FRAGMENT_SHADER);
     }
     pub fn copy_from_texture(&mut self, dst: DevicePointer, tex: &Texture<'_>) {
         todo!()
@@ -1482,7 +1551,7 @@ impl Gpu {
             .samples(get_sample_count_flag(desc.sample_count.try_into()
                 .expect("too many samples specified for texture")))
             .usage(vk::ImageUsageFlags::from_bits(desc.usage.bits()).expect("invalid texture usage flags")
-                | vk::ImageUsageFlags::TRANSFER_DST)
+                | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::TRANSFER_SRC)
             .initial_layout(vk::ImageLayout::UNDEFINED);
 
         let alloc_info = vma::AllocationOptions {
@@ -1497,7 +1566,7 @@ impl Gpu {
         let subresource_range = vk::ImageSubresourceRange::builder()
             .aspect_mask(aspect)
             .base_mip_level(0)
-            .level_count(1)
+            .level_count(desc.mip_count)
             .base_array_layer(0)
             .layer_count(1);
         let transition = vk::ImageMemoryBarrier2::builder()
@@ -1517,9 +1586,10 @@ impl Gpu {
         Ok(Texture {
             dimensions: desc.dimensions,
             format: desc.format,
-            aspect,
             ty: desc.ty,
             image,
+            aspect,
+            mip_count: desc.mip_count,
             allocation,
             gpu: self,
             view: Cell::new(vk::ImageView::null()),
@@ -1537,6 +1607,8 @@ impl Gpu {
             .mag_filter(vk::Filter::from_raw(desc.mag_filter as i32))
             .min_filter(vk::Filter::from_raw(desc.min_filter as i32))
             .mipmap_mode(vk::SamplerMipmapMode::from_raw(desc.mip_mode as i32))
+            .min_lod(0.0)
+            .max_lod(vk::LOD_CLAMP_NONE)
             .address_mode_u(vk::SamplerAddressMode::from_raw(desc.wrap_u as i32))
             .address_mode_v(vk::SamplerAddressMode::from_raw(desc.wrap_v as i32))
             .address_mode_w(vk::SamplerAddressMode::from_raw(desc.wrap_w as i32))

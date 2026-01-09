@@ -96,14 +96,16 @@ fn load_image(path: impl AsRef<Path>, gpu: &gpu::Gpu) -> Result<(u32, u32, gpu::
 
 pub fn create_texture<'a, 'b>(gpu: &'a gpu::Gpu, (width, height): (u32, u32), alloc: gpu::Allocation<'a, u8>,
                               format: gpu::Format, cmd_buf: &mut gpu::CommandBuffer<'b>) -> Result<gpu::Texture<'a>> where 'a: 'b {
+    let mip_count = width.max(height).checked_ilog2().unwrap_or(0).max(0) + 1;
     let tex = gpu.create_texture(gpu::TextureDesc {
         ty: gpu::TextureType::Tex2D,
         dimensions: (width, height, 1),
         format,
         usage: gpu::TextureUsageFlags::Sampled,
+        mip_count,
         ..Default::default()
     }, cmd_buf)?;
-    cmd_buf.copy_to_texture(alloc.device(), &tex);
+    cmd_buf.copy_to_texture_mipmapped(alloc.device(), &tex);
     cmd_buf.give_ownership(alloc);
 
     Ok(tex)
@@ -188,22 +190,22 @@ impl<'a> Application<'a> {
         let color = Vec3A::new(0.85, 0.65, 0.05);
         let lights = gpu.allocator().alloc_data(&[
             Light {
-                pos: Vec3::new(-6.2, 1.3, -2.2),
+                pos: Vec3::new(-5.0, 1.3, 1.1),
                 intensity,
                 color,
             },
             Light {
-                pos: Vec3::new(-6.2, 1.3, 1.4),
+                pos: Vec3::new(-5.0, 1.3, -1.7),
                 intensity,
                 color,
             },
             Light {
-                pos: Vec3::new(4.9, 1.3, 1.4),
+                pos: Vec3::new(3.9, 1.3, 1.1),
                 intensity,
                 color,
             },
             Light {
-                pos: Vec3::new(4.9, 1.3, -2.2),
+                pos: Vec3::new(3.9, 1.3, -1.7),
                 intensity,
                 color,
             },
