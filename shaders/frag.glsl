@@ -6,6 +6,8 @@ layout(location = 0) in vec2 inUv;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) flat in uvec4 inMat;
 layout(location = 3) in vec3 inWorldPos;
+//layout(location = 4) in vec3 inTangent;
+//layout(location = 5) in vec3 inBitangent;
 
 layout(location = 0) out vec4 outColor;
 
@@ -68,7 +70,7 @@ void main() {
         discard;
     }
 
-    vec3 sampleDisp = texDisp == texDiffuse ? vec3(0.0, 0.0, 1.0) : texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv).rgb;
+//    vec3 sampleDisp = texDisp == texDiffuse ? vec3(0.0, 0.0, 1.0) : texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv).rgb;
     vec2 sampleMetallicRoughness = texMetallicRoughness == texDiffuse ? vec2(1.0) : texture(sampler2D(textures[nonuniformEXT(texMetallicRoughness)], samplers[0]), inUv).rg;
     float sampleMetallic = sampleMetallicRoughness.g;
     float sampleRoughness = sampleMetallicRoughness.r;
@@ -82,7 +84,8 @@ void main() {
 
     vec4 diffuseAndNormal = readPacked(inMat.z);
     vec3 diffuse = diffuseAndNormal.rgb;
-    float normalFactor = diffuseAndNormal.a;
+    // normal factor is unused
+//    float normalFactor = diffuseAndNormal.a;
 
     vec4 specularAndExp = readPacked(inMat.w);
     // specular is unused
@@ -92,6 +95,7 @@ void main() {
     vec3 diffuseBase = sampleDiffuse.rgb * diffuse;
     vec3 resultColor = diffuseBase * intensityAmbient;
 
+//    vec3 normal = texDisp == texDiffuse ? inNormal : mat3(inTangent, inBitangent, inNormal) * texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv).rgb;
     vec3 normal = inNormal;
 
     FragData d = data.frag;

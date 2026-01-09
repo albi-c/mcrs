@@ -305,7 +305,7 @@ fn load_scene<'a>(gpu: &'a gpu::Gpu, scene: gltf::Scene<'_>, buffers: &[gltf::bu
                 reader.read_tex_coords(0).unwrap().into_f32().into_iter(),
                 reader.read_normals().unwrap().into_iter(),
             ) {
-                let pos = transform.transform_point3(Vec3::from_array(pos));
+                let pos = transform.transform_point3a(Vec3A::from_array(pos));
                 let uv = Vec2::from_array(uv);
                 let nor = (scale_transform * Vec3A::from_array(nor)).normalize();
                 let vert = Vertex(
@@ -345,7 +345,7 @@ impl<'a> Model<'a> {
             scenes.push(load_scene(
                 gpu, scene, &buffers, &images, tex_descriptors, &mut tex_offset)?);
         }
-        println!("Loaded {} scenes in {} seconds", scenes.len(), start.elapsed().as_secs_f64());
+        println!("Loaded {} scenes in {:.3} seconds", scenes.len(), start.elapsed().as_secs_f64());
         Ok(Self {
             scenes,
         })
@@ -368,7 +368,7 @@ impl<'a> Model<'a> {
         for _ in 0..count[0] {
             scenes.push(Scene::deserialize(gpu, tex_descriptors, src)?);
         }
-        println!("Loaded {} scenes in {} seconds", scenes.len(), start.elapsed().as_secs_f64());
+        println!("Loaded {} scenes in {:.3} seconds", scenes.len(), start.elapsed().as_secs_f64());
         Ok(Self {
             scenes,
         })

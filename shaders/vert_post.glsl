@@ -21,6 +21,6 @@ layout(std430, push_constant) uniform Data {
 } data;
 
 void main() {
-    gl_Position = vec4(positions[gl_VertexIndex] * 4.0 - 1.0, 0.0, 1.0);
+    gl_Position = vec4(positions[gl_VertexIndex], 0.0, 1.0) * 4.0 - 1.0;
     outUv = uvs[gl_VertexIndex] * 2.0;
 }

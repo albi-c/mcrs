@@ -17,7 +17,7 @@ use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use smart_default::SmartDefault;
 use vulkanalia::{vk, Device, Instance, Version};
-use vulkanalia::vk::{DeviceV1_0, ExtDescriptorBufferExtensionDeviceCommands, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrBufferDeviceAddressExtensionDeviceCommands, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrSynchronization2ExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
+use vulkanalia::vk::{DeviceV1_0, ExtDescriptorBufferExtensionDeviceCommands, ExtMeshShaderExtensionDeviceCommands, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrBufferDeviceAddressExtensionDeviceCommands, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrSynchronization2ExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
 use vulkanalia_vma as vma;
 use vulkanalia_vma::Alloc;
 use crate::vulkan::{create_logical_device, create_semaphore, create_shader, create_swapchain, find_suitable_device, get_cull_mode, get_front_face, get_sample_count_flag, CommandBufferPool, DescriptorSizes, PipelineLayout, PooledCommandBuffer, QueueFamilies, Queues, Swapchain};
@@ -239,6 +239,7 @@ bitflags! {
 pub enum ShaderStage {
     Vertex,
     Pixel,
+    Mesh,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -1030,12 +1031,8 @@ impl<'a> CommandBuffer<'a> {
         self.wait_before_masked(after, ptr, value, op, hazards, u64::MAX)
     }
 
-    // pub fn set_pipeline(&mut self, pipeline: &Pipeline<'_>) {
-    //     unsafe { self.gpu.device.cmd_bind_pipeline(self.buffer, pipeline.bind_point, pipeline.pipeline) };
-    // }
-
     pub fn bind_shaders<const N: usize>(&mut self, shaders: [&Shader<'_>; N]) {
-        self.unbind_shaders_raw(&[vk::ShaderStageFlags::GEOMETRY]);
+        self.unbind_shaders_raw(&[vk::ShaderStageFlags::VERTEX, vk::ShaderStageFlags::MESH_EXT]);
 
         let stages = shaders.map(|s| s.stage);
         let handles = shaders.map(|s| s.shader);
@@ -1227,13 +1224,18 @@ impl<'a> CommandBuffer<'a> {
         unsafe { self.gpu.device.cmd_end_rendering_khr(self.buffer) };
     }
 
-    fn push_graphics_pipeline_data(&mut self, vertex_data: DevicePointer, pixel_data: DevicePointer) {
-        let push_constants = [vertex_data, pixel_data];
+    fn push_pipeline_data(&mut self, data: &[DevicePointer]) {
         unsafe {
             self.gpu.device.cmd_push_constants(self.buffer, self.gpu.pipeline_layout.layout,
-                                               vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                                               0, bytemuck::cast_slice(&push_constants));
+                                               vk::ShaderStageFlags::VERTEX
+                                                   | vk::ShaderStageFlags::FRAGMENT
+                                                   | vk::ShaderStageFlags::MESH_EXT,
+                                               0, bytemuck::cast_slice(data));
         }
+    }
+
+    fn push_graphics_pipeline_data(&mut self, vertex_data: DevicePointer, pixel_data: DevicePointer) {
+        self.push_pipeline_data(&[vertex_data, pixel_data],);
     }
 
     pub fn draw_instanced(&mut self, vertex_data: DevicePointer, pixel_data: DevicePointer,
@@ -1272,9 +1274,14 @@ impl<'a> CommandBuffer<'a> {
         todo!()
     }
 
+    fn push_mesh_pipeline_data(&mut self, meshlet_data: DevicePointer, pixel_data: DevicePointer) {
+        self.push_pipeline_data(&[meshlet_data, pixel_data]);
+    }
+
     pub fn draw_meshlets(&mut self, meshlet_data: DevicePointer, pixel_data: DevicePointer,
-                         dimensions: (u32, u32, u32)) {
-        todo!()
+                         (x, y, z): (u32, u32, u32)) {
+        self.push_mesh_pipeline_data(meshlet_data, pixel_data);
+        unsafe { self.gpu.device.cmd_draw_mesh_tasks_ext(self.buffer, x, y, z) };
     }
     pub fn draw_meshlets_indirect(&mut self, meshlet_data: DevicePointer, pixel_data: DevicePointer,
                                   dimensions: DevicePointer) {

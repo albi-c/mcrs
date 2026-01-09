@@ -24,7 +24,7 @@ fn create_instance(window: &Window, entry: &Entry) -> Result<(Instance, Option<v
         .application_version(vk::make_version(0, 0, 1))
         .engine_name(b"No Engine")
         .engine_version(vk::make_version(1, 0, 0))
-        .api_version(vk::make_version(1, 0, 0));
+        .api_version(vk::make_version(1, 3, 0));
 
     let mut extensions = vulkanalia::window::get_required_instance_extensions(window)
         .iter()

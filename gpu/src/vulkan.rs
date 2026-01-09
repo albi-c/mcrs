@@ -32,6 +32,9 @@ const EXTENSION_REQUIREMENTS: &[vk::ExtensionName] = &[
     vk::KHR_GET_MEMORY_REQUIREMENTS2_EXTENSION.name,
     vk::KHR_STORAGE_BUFFER_STORAGE_CLASS_EXTENSION.name,
     vk::KHR_16BIT_STORAGE_EXTENSION.name,
+    vk::EXT_MESH_SHADER_EXTENSION.name,
+    vk::KHR_SPIRV_1_4_EXTENSION.name,
+    vk::KHR_SHADER_FLOAT_CONTROLS_EXTENSION.name,
 ];
 
 pub fn create_semaphore(device: &Device, value: u64) -> Result<vk::Semaphore> {
@@ -200,7 +203,7 @@ impl PipelineLayout {
             .binding(0)
             .descriptor_type(ty)
             .descriptor_count(count)
-            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT);
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::MESH_EXT);
         let bindings = [binding];
         let info = vk::DescriptorSetLayoutCreateInfo::builder()
             .flags(vk::DescriptorSetLayoutCreateFlags::DESCRIPTOR_BUFFER_EXT)
@@ -211,7 +214,7 @@ impl PipelineLayout {
     pub fn new(device: &Device) -> Result<Self> {
         let push_constant_ranges = [
             vk::PushConstantRange::builder()
-                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::MESH_EXT)
                 .size(16),
         ];
         let set_layouts = [
@@ -569,13 +572,17 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
 
     let mut info_13 = vk::PhysicalDeviceVulkan13Features::builder()
         .dynamic_rendering(true)
-        .synchronization2(true);
+        .synchronization2(true)
+        .maintenance4(true);
 
     let mut info_shader_object = vk::PhysicalDeviceShaderObjectFeaturesEXT::builder()
         .shader_object(true);
 
     let mut info_descriptor_buffer = vk::PhysicalDeviceDescriptorBufferFeaturesEXT::builder()
         .descriptor_buffer(true);
+
+    let mut info_mesh_shader = vk::PhysicalDeviceMeshShaderFeaturesEXT::builder()
+        .mesh_shader(true);
 
     let info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(&queue_infos)
@@ -586,7 +593,8 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         .push_next(&mut info_12)
         .push_next(&mut info_13)
         .push_next(&mut info_shader_object)
-        .push_next(&mut info_descriptor_buffer);
+        .push_next(&mut info_descriptor_buffer)
+        .push_next(&mut info_mesh_shader);
     let device = unsafe { instance.create_device(physical_device, &info, None)? };
 
     Ok(device)
@@ -627,6 +635,7 @@ pub fn get_stage(stage: ShaderStage) -> vk::ShaderStageFlags {
     match stage {
         ShaderStage::Vertex => vk::ShaderStageFlags::VERTEX,
         ShaderStage::Pixel => vk::ShaderStageFlags::FRAGMENT,
+        ShaderStage::Mesh => vk::ShaderStageFlags::MESH_EXT,
     }
 }
 
@@ -634,6 +643,7 @@ fn get_next_stage(stage: ShaderStage) -> vk::ShaderStageFlags {
     match stage {
         ShaderStage::Vertex => vk::ShaderStageFlags::FRAGMENT,
         ShaderStage::Pixel => vk::ShaderStageFlags::empty(),
+        ShaderStage::Mesh => vk::ShaderStageFlags::FRAGMENT,
     }
 }
 
@@ -647,7 +657,7 @@ pub fn create_shader<'a>(gpu: &'a Gpu, spirv: &[u8], stage: ShaderStage) -> Resu
     let vk_stage = get_stage(stage);
     let push_constant_ranges = [
         vk::PushConstantRange::builder()
-            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::MESH_EXT)
             .size(16),
     ];
     let info = vk::ShaderCreateInfoEXT::builder()

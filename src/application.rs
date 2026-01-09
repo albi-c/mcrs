@@ -16,6 +16,7 @@ use crate::gltf;
 
 const FRAMES_IN_FLIGHT: u64 = 2;
 
+// TODO: use u16 instead of f16
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct Vertex(pub [f16; 3], pub u16, pub [f16; 2], pub u32);
@@ -127,12 +128,12 @@ fn load_texture<'a, 'b>(path: impl AsRef<Path>, gpu: &'a gpu::Gpu,
 }
 
 fn load_gltf_cached<'a>(path: impl AsRef<Path>, cache_path: impl AsRef<Path>, gpu: &'a gpu::Gpu,
-                        tex_descriptors: &mut gpu::DescriptorHeap<'a>) -> Result<gltf::Model<'a>> {
+                        tex_descriptors: &mut gpu::DescriptorHeap<'a>, tex_offset: u16) -> Result<gltf::Model<'a>> {
     if fs::exists(&cache_path)? {
         let mut file = fs::File::open(cache_path)?;
         gltf::Model::deserialize(gpu, tex_descriptors, &mut file)
     } else {
-        let gltf = gltf::Model::load(gpu, path, tex_descriptors, 1)?;
+        let gltf = gltf::Model::load(gpu, path, tex_descriptors, tex_offset)?;
         let mut file = fs::File::create(cache_path)?;
         gltf.serialize(&mut file)?;
         Ok(gltf)
@@ -148,7 +149,7 @@ struct Shaders<'a> {
     pub vertex: gpu::Shader<'a>,
     pub pixel: gpu::Shader<'a>,
 
-    pub vertex_post: gpu::Shader<'a>,
+    pub mesh_post: gpu::Shader<'a>,
     pub pixel_post: gpu::Shader<'a>,
 }
 
@@ -193,7 +194,10 @@ impl<'a> Application<'a> {
 
         let gltf = load_gltf_cached(
             "models/Sponza_gltf/glTF/Sponza.gltf", "models/sponza_gltf.cache",
-            gpu, &mut tex_descriptors)?;
+            gpu, &mut tex_descriptors, 1)?;
+        // let gltf = gltf::Model::load(
+        //     gpu, "models/Sponza_gltf/glTF/Sponza.gltf",
+        //     &mut tex_descriptors, 1)?;
 
         let intensity = 1.5;
         let color = Vec3A::new(0.85, 0.65, 0.05);
@@ -228,8 +232,8 @@ impl<'a> Application<'a> {
                 pixel: gpu.create_shader(&fs::read("shaders/frag.spv")?,
                                          gpu::ShaderStage::Pixel)?,
 
-                vertex_post: gpu.create_shader(&fs::read("shaders/vert_post.spv")?,
-                                               gpu::ShaderStage::Vertex)?,
+                mesh_post: gpu.create_shader(&fs::read("shaders/mesh_post.spv")?,
+                                             gpu::ShaderStage::Mesh)?,
                 pixel_post: gpu.create_shader(&fs::read("shaders/frag_post.spv")?,
                                               gpu::ShaderStage::Pixel)?,
             },
@@ -430,15 +434,15 @@ impl<'a> Application<'a> {
             ..Default::default()
         };
         command_buffer.begin_render_pass(&post_pass_desc);
-        command_buffer.bind_shaders([&self.shaders.vertex_post, &self.shaders.pixel_post]);
+        command_buffer.bind_shaders([&self.shaders.mesh_post, &self.shaders.pixel_post]);
         command_buffer.set_texture_heap(
             Some(&self.tex_descriptors),
             None,
             Some(&self.sampler_descriptors),
         );
-        command_buffer.draw_instanced(
+        command_buffer.draw_meshlets(
             gpu::DevicePointer::null(), post_pixel_data.device(),
-            3, 1, 0, 0);
+            (1, 1, 1));
         command_buffer.end_render_pass();
 
         self.queue.submit(command_buffer, &self.frame_semaphore, self.next_frame)?;
