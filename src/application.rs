@@ -18,7 +18,16 @@ const FRAMES_IN_FLIGHT: u64 = 2;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-pub struct Vertex(pub Vec3, pub u32, pub Vec2, pub [f16; 4]);
+pub struct Vertex(pub [f16; 3], pub u16, pub [f16; 2], pub u32);
+
+impl Vertex {
+    pub fn pack_normal(normal: Vec3A) -> u32 {
+        let x = (((normal.x + 1.0) * 1024.0) as u32).clamp(0, 0x7ff);
+        let y = (((normal.y + 1.0) * 512.0) as u32).clamp(0, 0x3ff);
+        let z = (((normal.z + 1.0) * 1024.0) as u32).clamp(0, 0x7ff);
+        x | (y << 11) | (z << 21)
+    }
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
@@ -348,7 +357,7 @@ impl<'a> Application<'a> {
         let mat_model = Mat4::default();
         let mat_mvp = mat_perspective * mat_flip * mat_view * mat_model;
 
-        const { assert!(size_of::<Vertex>() == 32) };
+        const { assert!(size_of::<Vertex>() == 16) };
 
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]

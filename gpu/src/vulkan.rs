@@ -11,6 +11,7 @@ const FEATURE_REQUIREMENTS: &[(fn(&vk::PhysicalDeviceFeatures) -> vk::Bool32, &s
     (|f| f.shader_int64, "shader int64"),
     (|f| f.multi_draw_indirect, "multi draw indirect"),
     (|f| f.sampler_anisotropy, "sampler anisotropy"),
+    (|f| f.shader_int16, "shader int16"),
 ];
 
 const EXTENSION_REQUIREMENTS: &[vk::ExtensionName] = &[
@@ -552,7 +553,8 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
     let features = vk::PhysicalDeviceFeatures::builder()
         .shader_int64(true)
         .multi_draw_indirect(true)
-        .sampler_anisotropy(true);
+        .sampler_anisotropy(true)
+        .shader_int16(true);
 
     let mut info_11 = vk::PhysicalDeviceVulkan11Features::builder()
         .storage_buffer_16bit_access(true);

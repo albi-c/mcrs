@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use anyhow::{anyhow, Result};
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat3, Mat4, Quat, Vec2, Vec3, Vec4, Vec4Swizzles};
+use glam::{Mat3, Mat4, Quat, Vec2, Vec3, Vec3A, Vec4, Vec4Swizzles};
 use half::f16;
 use itertools::izip;
 use gpu::{MemoryAllocation, MemoryAllocator};
@@ -298,7 +298,7 @@ fn load_scene<'a>(gpu: &'a gpu::Gpu, scene: gltf::Scene<'_>, buffers: &[gltf::bu
 
             let (mat, _) = material_indices.get(&prim.material().index().unwrap())
                 .expect("material index not in map");
-            let mat = u32::try_from(*mat).expect("too many materials");
+            let mat = u16::try_from(*mat).expect("too many materials");
 
             for (pos, uv, nor) in izip!(
                 reader.read_positions().unwrap().into_iter(),
@@ -307,12 +307,12 @@ fn load_scene<'a>(gpu: &'a gpu::Gpu, scene: gltf::Scene<'_>, buffers: &[gltf::bu
             ) {
                 let pos = transform.transform_point3(Vec3::from_array(pos));
                 let uv = Vec2::from_array(uv);
-                let nor = (scale_transform * Vec3::from_array(nor)).normalize();
+                let nor = (scale_transform * Vec3A::from_array(nor)).normalize();
                 let vert = Vertex(
-                    pos,
+                    [f16::from_f32(pos.x), f16::from_f32(pos.y), f16::from_f32(pos.z)],
                     mat,
-                    uv,
-                    [f16::from_f32(nor.x), f16::from_f32(nor.y), f16::from_f32(nor.z), f16::default()],
+                    [f16::from_f32(uv.x), f16::from_f32(uv.y)],
+                    Vertex::pack_normal(nor),
                 );
                 vertices[vertex_index] = vert;
                 vertex_index += 1;

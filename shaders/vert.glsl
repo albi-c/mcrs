@@ -7,16 +7,28 @@ layout(location = 1) out vec3 outNormal;
 layout(location = 2) flat out uvec4 outMat;
 layout(location = 3) out vec3 outWorldPos;
 
+//struct Vertex {
+//    float x;
+//    float y;
+//    float z;
+//    uint mat;
+//    vec2 uv;
+//    float16_t nx;
+//    float16_t ny;
+//    float16_t nz;
+//    float16_t _pad;
+//};
+
 struct Vertex {
-    float x;
-    float y;
-    float z;
-    uint mat;
-    vec2 uv;
-    float16_t nx;
-    float16_t ny;
-    float16_t nz;
-    float16_t _pad;
+    float16_t x;
+    float16_t y;
+    float16_t z;
+    uint16_t mat;
+    float16_t u;
+    float16_t v;
+    // 11:10:11
+    // z / 1024 - 1, y / 512 - 1, x / 1024 - 1
+    uint n;
 };
 
 struct Material {
@@ -56,13 +68,17 @@ void main() {
     VertData d = data.vert;
 
     Vertex vertex = d.vertices.data[gl_VertexIndex];
-    vec4 vertexPos = vec4(vertex.x, vertex.y, vertex.z, 1.0);
+    vec4 vertexPos = vec4(float(vertex.x), float(vertex.y), float(vertex.z), 1.0);
     vec4 position = d.mvp * vertexPos;
     gl_Position = position;
     outWorldPos = (d.model * vertexPos).xyz;
-    outUv = vertex.uv;
+    outUv = vec2(vertex.u, vertex.v);
+    uint n = vertex.n;
+    float nx = float(n & 0x7ff) / 1024.0 - 1.0;
+    float ny = float((n >> 11) & 0x3ff) / 512.0 - 1.0;
+    float nz = float(n >> 21) / 1024.0 - 1.0;
     // TODO: multiply by inverse of model matrix if doing non uniform transforms
-    vec3 normal = vec3(float(vertex.nx), float(vertex.ny), float(vertex.nz));
+    vec3 normal = normalize(vec3(nx, ny, nz));
     outNormal = normal;
 
     Material material = d.materials.data[vertex.mat];
