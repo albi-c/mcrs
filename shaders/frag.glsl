@@ -57,6 +57,26 @@ vec3 getLight(in vec3 normal, in vec3 viewDir, float specExp, float metallic, fl
     return light.color.rgb * intDiff / max(pow(distance, 1.4), 1.0) * light.posAndIntensity.w * 1.2;
 }
 
+mat3 getTBN(vec3 p, vec3 n) {
+    // http://www.thetenthplanet.de/archives/1180
+    vec3 dp1 = dFdx(p);
+    vec3 dp2 = dFdy(p);
+    vec2 duv1 = dFdx(inUv);
+    vec2 duv2 = dFdy(inUv);
+    vec3 dp2perp = cross(dp2, n);
+    vec3 dp1perp = cross(n, dp1);
+    vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+    vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+    float invmax = inversesqrt(max(dot(T, T), dot(B, B)));
+    return mat3(T * invmax, B * invmax, n);
+}
+
+vec3 getSampledNormal(uint tex, vec3 viewPos) {
+    mat3 tbn = getTBN(inWorldPos - viewPos, normalize(inNormal));
+    vec3 map = texture(sampler2D(textures[nonuniformEXT(tex)], samplers[0]), inUv).rgb * 2.0 - 1.0;
+    return normalize(tbn * map);
+}
+
 void main() {
     uint texDiffuseRaw = inMat.x >> 16;
     uint texDiffuse = texDiffuseRaw & 0x7fff;
@@ -70,7 +90,7 @@ void main() {
         discard;
     }
 
-//    vec3 sampleDisp = texDisp == texDiffuse ? vec3(0.0, 0.0, 1.0) : texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv).rgb;
+//    vec3 sampleDisp = texDisp == texDiffuse ? vec3(0.0, 0.0, 0.5) : texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv).rgb;
     vec2 sampleMetallicRoughness = texMetallicRoughness == texDiffuse ? vec2(1.0) : texture(sampler2D(textures[nonuniformEXT(texMetallicRoughness)], samplers[0]), inUv).rg;
     float sampleMetallic = sampleMetallicRoughness.g;
     float sampleRoughness = sampleMetallicRoughness.r;
@@ -95,13 +115,13 @@ void main() {
     vec3 diffuseBase = sampleDiffuse.rgb * diffuse;
     vec3 resultColor = diffuseBase * intensityAmbient;
 
-//    vec3 normal = texDisp == texDiffuse ? inNormal : mat3(inTangent, inBitangent, inNormal) * texture(sampler2D(textures[nonuniformEXT(texDisp)], samplers[0]), inUv).rgb;
-    vec3 normal = inNormal;
-
     FragData d = data.frag;
+    vec3 viewPos = vec3(d.viewX, d.viewY, d.viewZ);
+
+    vec3 normal = texDisp == texDiffuse ? inNormal : getSampledNormal(texDisp, viewPos);
+
     uint lightCount = d.lightCount;
     FragDataLights lights = d.lights;
-    vec3 viewPos = vec3(d.viewX, d.viewY, d.viewZ);
     vec3 viewDir = normalize(viewPos - inWorldPos);
     for (uint i = 0; i < lightCount; i++) {
         vec3 specular;
