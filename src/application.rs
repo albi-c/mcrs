@@ -467,9 +467,6 @@ impl<'a> Application<'a> {
             (1, 1, 1));
         command_buffer.end_render_pass();
 
-        // command_buffer.bind_compute_shader(&self.shaders.compute_post);
-        // command_buffer.dispatch(gpu::DevicePointer::null(), (1, 1, 1));
-
         self.queue.submit(command_buffer, &self.frame_semaphore, self.next_frame)?;
         self.gpu.swapchain_present(&self.frame_semaphore, self.next_frame)?;
 

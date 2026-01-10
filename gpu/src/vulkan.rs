@@ -222,12 +222,8 @@ impl PipelineLayout {
     pub fn new(device: &Device) -> Result<Self> {
         let push_constant_ranges = [
             vk::PushConstantRange::builder()
-                .stage_flags(Self::ALL_GRAPHICS_STAGES)
+                .stage_flags(Self::ALL_STAGES)
                 .size(16),
-            vk::PushConstantRange::builder()
-                .stage_flags(vk::ShaderStageFlags::COMPUTE)
-                .size(8)
-                .offset(16),
         ];
         let set_layouts = [
             Self::create_descriptor_set_layout(device, vk::DescriptorType::SAMPLED_IMAGE, Self::MAX_TEXTURES)?,
@@ -670,7 +666,7 @@ pub fn create_shader<'a>(gpu: &'a Gpu, spirv: &[u8], stage: ShaderStage) -> Resu
     let vk_stage = get_stage(stage);
     let push_constant_ranges = [
         vk::PushConstantRange::builder()
-            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::MESH_EXT)
+            .stage_flags(PipelineLayout::ALL_STAGES)
             .size(16),
     ];
     let info = vk::ShaderCreateInfoEXT::builder()

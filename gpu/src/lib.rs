@@ -1057,8 +1057,8 @@ impl<'a> CommandBuffer<'a> {
     fn push_compute_pipeline_data(&mut self, data: DevicePointer) {
         unsafe {
             self.gpu.device.cmd_push_constants(self.buffer, self.gpu.pipeline_layout.layout,
-                                               vk::ShaderStageFlags::COMPUTE,
-                                               16, bytemuck::cast_slice(&[data]));
+                                               PipelineLayout::ALL_STAGES,
+                                               0, bytemuck::cast_slice(&[data, DevicePointer::null()]));
         }
     }
     pub fn bind_compute_shader(&mut self, shader: &Shader<'_>) {
@@ -1237,18 +1237,16 @@ impl<'a> CommandBuffer<'a> {
         unsafe { self.gpu.device.cmd_end_rendering_khr(self.buffer) };
     }
 
-    fn push_pipeline_data(&mut self, data: &[DevicePointer]) {
+    fn push_pipeline_data(&mut self, data: [DevicePointer; 2]) {
         unsafe {
             self.gpu.device.cmd_push_constants(self.buffer, self.gpu.pipeline_layout.layout,
-                                               vk::ShaderStageFlags::VERTEX
-                                                   | vk::ShaderStageFlags::FRAGMENT
-                                                   | vk::ShaderStageFlags::MESH_EXT,
-                                               0, bytemuck::cast_slice(data));
+                                               PipelineLayout::ALL_STAGES,
+                                               0, bytemuck::cast_slice(&data));
         }
     }
 
     fn push_graphics_pipeline_data(&mut self, vertex_data: DevicePointer, pixel_data: DevicePointer) {
-        self.push_pipeline_data(&[vertex_data, pixel_data],);
+        self.push_pipeline_data([vertex_data, pixel_data]);
     }
 
     pub fn draw_instanced(&mut self, vertex_data: DevicePointer, pixel_data: DevicePointer,
@@ -1288,7 +1286,7 @@ impl<'a> CommandBuffer<'a> {
     }
 
     fn push_mesh_pipeline_data(&mut self, meshlet_data: DevicePointer, pixel_data: DevicePointer) {
-        self.push_pipeline_data(&[meshlet_data, pixel_data]);
+        self.push_pipeline_data([meshlet_data, pixel_data]);
     }
 
     pub fn draw_meshlets(&mut self, meshlet_data: DevicePointer, pixel_data: DevicePointer,
