@@ -11,7 +11,7 @@ use half::f16;
 use image::{EncodableLayout, ImageReader};
 use winit::event::ElementState;
 use winit::keyboard::{KeyCode, PhysicalKey};
-use gpu::{MemoryAllocation, MemoryAllocator};
+use gpu::{CommandBuffer, MemoryAllocation, MemoryAllocator, Queue};
 use crate::gltf;
 
 const FRAMES_IN_FLIGHT: u64 = 2;
@@ -188,6 +188,54 @@ pub struct Application<'a> {
     camera_look: Vec2,
 }
 
+fn create_bottom_level_as<'a>(gpu: &'a gpu::Gpu, queue: &Queue<'a>) -> Result<gpu::rt::BottomLevelAS<'a>> {
+    let allocator = gpu.allocator_mem(gpu::Memory::AccelerationStructureInput);
+    let mut bl_as = gpu::rt::BottomLevelAS::builder();
+    let vertices = allocator.alloc_data(&[
+        [0.0f32, 0.0, 0.0],
+        [10.0, 0.0, 0.0],
+        [0.0, 10.0, 0.0],
+    ])?;
+    let indices = allocator.alloc_data(&[0u32, 1, 2])?;
+    let mat = Mat4::default();
+    let transform_data = [
+        mat.row(0).to_array(),
+        mat.row(1).to_array(),
+        mat.row(2).to_array(),
+    ];
+
+    let mut cmd_buf = queue.create_buffer()?;
+
+    let transform = allocator.alloc_data(&[transform_data])?;
+    bl_as.geometry(
+        vertices, gpu::rt::VertexFormat::XYZ32Float, indices,
+        transform, 0, gpu::rt::GeometryFlags::Opaque);
+    let bl_as = bl_as.build(gpu, &mut cmd_buf)?;
+
+    queue.submit_no_signal(cmd_buf)?.wait();
+
+    Ok(bl_as)
+}
+
+fn create_top_level_as<'a>(gpu: &'a gpu::Gpu, queue: &Queue<'a>, bl_as: &gpu::rt::BottomLevelAS<'a>) -> Result<gpu::rt::TopLevelAS<'a>> {
+    let mat = Mat4::default();
+    let transform_data = [
+        mat.row(0).to_array(),
+        mat.row(1).to_array(),
+        mat.row(2).to_array(),
+    ];
+
+    let mut cmd_buf = queue.create_buffer()?;
+
+    let mut tl_as = gpu::rt::TopLevelAS::builder();
+    tl_as.add(&bl_as, &transform_data);
+    let tl_as = tl_as.build(gpu, &mut cmd_buf)?;
+
+    queue.submit_no_signal(cmd_buf)?.wait();
+
+    Ok(tl_as)
+}
+
 impl<'a> Application<'a> {
     pub fn new(gpu: &'a gpu::Gpu, ctx: &dyn gpu::SwapchainContext) -> Result<Self> {
         let queue = gpu.create_queue(gpu::QueueType::Graphics)?;
@@ -205,6 +253,9 @@ impl<'a> Application<'a> {
 
         queue.submit_no_signal(command_buffer)?.wait();
 
+        let bl_as = create_bottom_level_as(gpu, &queue)?;
+        let tl_as = create_top_level_as(gpu, &queue, &bl_as)?;
+
         let gltf = load_gltf_cached(
             "models/Sponza_gltf/glTF/Sponza.gltf", "models/sponza_gltf.cache",
             gpu, &mut tex_descriptors, 1)?;
@@ -218,6 +269,8 @@ impl<'a> Application<'a> {
         // TODO: fsr
         // TODO: ray query for shadows
         // TODO: point shadows using multi view
+        // TODO: model loading abstraction
+        // TODO: synchronization 2 everywhere
 
         let intensity = 1.5;
         let color = Vec3A::new(0.85, 0.65, 0.05);

@@ -35,6 +35,10 @@ const EXTENSION_REQUIREMENTS: &[vk::ExtensionName] = &[
     vk::EXT_MESH_SHADER_EXTENSION.name,
     vk::KHR_SPIRV_1_4_EXTENSION.name,
     vk::KHR_SHADER_FLOAT_CONTROLS_EXTENSION.name,
+    vk::KHR_DEFERRED_HOST_OPERATIONS_EXTENSION.name,
+    vk::KHR_RAY_QUERY_EXTENSION.name,
+    vk::KHR_ACCELERATION_STRUCTURE_EXTENSION.name,
+    vk::EXT_DEVICE_FAULT_EXTENSION.name,
 ];
 
 pub fn create_semaphore(device: &Device, value: u64) -> Result<vk::Semaphore> {
@@ -258,7 +262,7 @@ pub struct DescriptorSizes {
 }
 
 impl DescriptorSizes {
-    pub fn new(instance: &Instance, device: vk::PhysicalDevice) -> Result<Self> {
+    pub fn new(instance: &Instance, device: vk::PhysicalDevice) -> Self {
         let prop = {
             let mut properties_ext = vk::PhysicalDeviceDescriptorBufferPropertiesEXT::default();
             let mut properties = vk::PhysicalDeviceProperties2::builder()
@@ -266,11 +270,38 @@ impl DescriptorSizes {
             unsafe { instance.get_physical_device_properties2(device, &mut properties) };
             properties_ext
         };
-        Ok(Self {
+        Self {
             sampled_texture: prop.sampled_image_descriptor_size,
             storage_texture: prop.storage_image_descriptor_size,
             sampler: prop.sampler_descriptor_size,
-        })
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct AccelerationStructureInfo {
+    pub properties: vk::PhysicalDeviceAccelerationStructurePropertiesKHR,
+}
+
+impl AccelerationStructureInfo {
+    pub fn new(instance: &Instance, device: vk::PhysicalDevice) -> Self {
+        // let features = {
+        //     let mut as_features = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default();
+        //     let mut features = vk::PhysicalDeviceFeatures2::builder()
+        //         .push_next(&mut as_features);
+        //     unsafe { instance.get_physical_device_features2(device, &mut features) };
+        //     as_features
+        // };
+        let properties = {
+            let mut as_properties = vk::PhysicalDeviceAccelerationStructurePropertiesKHR::default();
+            let mut properties = vk::PhysicalDeviceProperties2::builder()
+                .push_next(&mut as_properties);
+            unsafe { instance.get_physical_device_properties2(device, &mut properties) };
+            as_properties
+        };
+        Self {
+            properties,
+        }
     }
 }
 
@@ -577,7 +608,8 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         .timeline_semaphore(true)
         .descriptor_indexing(true)
         .shader_sampled_image_array_non_uniform_indexing(true)
-        .shader_float16(true);
+        .shader_float16(true)
+        .buffer_device_address_capture_replay(true);
 
     let mut info_13 = vk::PhysicalDeviceVulkan13Features::builder()
         .dynamic_rendering(true)
@@ -593,6 +625,15 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
     let mut info_mesh_shader = vk::PhysicalDeviceMeshShaderFeaturesEXT::builder()
         .mesh_shader(true);
 
+    let mut info_ray_query = vk::PhysicalDeviceRayQueryFeaturesKHR::builder()
+        .ray_query(true);
+
+    let mut info_acceleration_structure = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::builder()
+        .acceleration_structure(true);
+
+    let mut info_device_fault = vk::PhysicalDeviceFaultFeaturesEXT::builder()
+        .device_fault(true);
+
     let info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(&queue_infos)
         .enabled_layer_names(&layers)
@@ -603,7 +644,10 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         .push_next(&mut info_13)
         .push_next(&mut info_shader_object)
         .push_next(&mut info_descriptor_buffer)
-        .push_next(&mut info_mesh_shader);
+        .push_next(&mut info_mesh_shader)
+        .push_next(&mut info_ray_query)
+        .push_next(&mut info_acceleration_structure)
+        .push_next(&mut info_device_fault);
     let device = unsafe { instance.create_device(physical_device, &info, None)? };
 
     Ok(device)

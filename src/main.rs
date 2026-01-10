@@ -20,9 +20,9 @@ use crate::application::Application;
 
 fn create_instance(window: &Window, entry: &Entry) -> Result<(Instance, Option<vk::DebugUtilsMessengerEXT>)> {
     let app_info = vk::ApplicationInfo::builder()
-        .application_name(b"MCRS")
+        .application_name(b"MCRS\0")
         .application_version(vk::make_version(0, 0, 1))
-        .engine_name(b"No Engine")
+        .engine_name(b"No Engine\0")
         .engine_version(vk::make_version(1, 0, 0))
         .api_version(vk::make_version(1, 3, 0));
 
@@ -148,6 +148,7 @@ impl Drop for App {
 
 fn main() -> Result<()> {
     pretty_env_logger::init();
+    // pretty_env_logger::formatted_builder().filter_level(log::LevelFilter::Warn).init();
 
     let mut event_loop = EventLoop::new()?;
     let window = WindowBuilder::new()

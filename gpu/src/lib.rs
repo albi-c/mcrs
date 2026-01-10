@@ -4,6 +4,7 @@
 
 mod vulkan;
 mod arena;
+pub mod rt;
 
 use std::alloc::Layout;
 use std::cell::{Cell, RefCell};
@@ -17,10 +18,10 @@ use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use smart_default::SmartDefault;
 use vulkanalia::{vk, Device, Instance, Version};
-use vulkanalia::vk::{DeviceV1_0, ExtDescriptorBufferExtensionDeviceCommands, ExtMeshShaderExtensionDeviceCommands, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrBufferDeviceAddressExtensionDeviceCommands, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrSynchronization2ExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
+use vulkanalia::vk::{DeviceV1_0, ExtDescriptorBufferExtensionDeviceCommands, ExtDeviceFaultExtensionDeviceCommands, ExtMeshShaderExtensionDeviceCommands, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrBufferDeviceAddressExtensionDeviceCommands, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrSynchronization2ExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
 use vulkanalia_vma as vma;
 use vulkanalia_vma::Alloc;
-use crate::vulkan::{create_logical_device, create_semaphore, create_shader, create_swapchain, find_suitable_device, get_cull_mode, get_front_face, get_sample_count_flag, CommandBufferPool, DescriptorSizes, PipelineLayout, PooledCommandBuffer, QueueFamilies, Queues, Swapchain};
+use crate::vulkan::{create_logical_device, create_semaphore, create_shader, create_swapchain, find_suitable_device, get_cull_mode, get_front_face, get_sample_count_flag, AccelerationStructureInfo, CommandBufferPool, DescriptorSizes, PipelineLayout, PooledCommandBuffer, QueueFamilies, Queues, Swapchain};
 
 pub use vulkan::create_debug_info_callback;
 pub use crate::arena::Arena;
@@ -41,6 +42,8 @@ pub enum Memory {
     Default,
     Gpu,
     Readback,
+    AccelerationStructureInput,
+    AccelerationStructureStorage,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -248,6 +251,16 @@ pub enum ShaderStage {
 pub enum IndexType {
     U16 = vk::IndexType::UINT16.as_raw(),
     U32 = vk::IndexType::UINT32.as_raw(),
+}
+
+pub unsafe trait HasIndexType : Pod + Debug {
+    const INDEX_TYPE: IndexType;
+}
+unsafe impl HasIndexType for u16 {
+    const INDEX_TYPE: IndexType = IndexType::U16;
+}
+unsafe impl HasIndexType for u32 {
+    const INDEX_TYPE: IndexType = IndexType::U32;
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -845,7 +858,39 @@ impl<'a> Queue<'a> {
             .signal_semaphores(signal_semaphores)
             .push_next(&mut semaphore_info);
 
-        unsafe { gpu.device.queue_submit(self.queue, &[info], vk::Fence::null())? };
+        if let Err(e) = unsafe { gpu.device.queue_submit(self.queue, &[info], vk::Fence::null()) } {
+            if e == vk::ErrorCode::DEVICE_LOST {
+                log::error!("-- DEVICE LOST --");
+                let mut count = vk::DeviceFaultCountsEXT::default();
+                unsafe { gpu.device.get_device_fault_info_ext(&mut count, None)
+                    .expect("failed to get device fault info") };
+                let mut address_infos =
+                    vec![vk::DeviceFaultAddressInfoEXT::default(); count.address_info_count as usize];
+                let mut vendor_infos =
+                    vec![vk::DeviceFaultVendorInfoEXT::default(); count.vendor_info_count as usize];
+                let mut vendor_data = vec![0u8; count.vendor_binary_size as usize];
+                let mut info = vk::DeviceFaultInfoEXT::builder()
+                    .address_infos(unsafe { &mut *address_infos.as_mut_ptr() })
+                    .vendor_infos(unsafe { &mut *vendor_infos.as_mut_ptr() })
+                    .vendor_binary_data(unsafe { &mut *vendor_data.as_mut_ptr() });
+                unsafe { gpu.device.get_device_fault_info_ext(&mut count, Some(&mut info))
+                    .expect("failed to get device fault info") };
+                println!("Error description: {}", info.description);
+                for addr in address_infos {
+                    println!("Address info: reported {:#x?}, precision {:#x?}, type {:?}",
+                             addr.reported_address, addr.address_precision, addr.address_type);
+                }
+                for vendor in vendor_infos {
+                    println!("Vendor info: {}, fault code {}, fault data {}",
+                             vendor.description, vendor.vendor_fault_code, vendor.vendor_fault_data);
+                }
+                if !vendor_data.is_empty() {
+                    println!("Got {} bytes of vendor data", vendor_data.len());
+                }
+                log::error!("-- DEVICE LOST --");
+            }
+            Err(e)?;
+        }
 
         self.command_pool.release(&gpu.device, buffer.item.take()
             .expect("command buffer submitted twice"));
@@ -1363,6 +1408,7 @@ pub struct Gpu {
     pub(crate) buffers: RefCell<BTreeMap<vk::DeviceAddress, (vk::Buffer, vk::DeviceSize)>>,
     pub(crate) pipeline_layout: PipelineLayout,
     pub(crate) descriptor_sizes: DescriptorSizes,
+    pub(crate) acceleration_structure_info: AccelerationStructureInfo,
 }
 
 impl Gpu {
@@ -1388,7 +1434,8 @@ impl Gpu {
             pipeline_layout: PipelineLayout::new(&logical_device)?,
             device: logical_device,
             buffers: RefCell::new(BTreeMap::new()),
-            descriptor_sizes: DescriptorSizes::new(instance, physical_device)?,
+            descriptor_sizes: DescriptorSizes::new(instance, physical_device),
+            acceleration_structure_info: AccelerationStructureInfo::new(instance, physical_device),
         })
     }
 
@@ -1423,16 +1470,19 @@ impl Gpu {
 
     unsafe fn alloc_layout<T: Pod>(&self, count: usize, layout: Layout, memory: Memory) -> Result<Allocation<'_, T>> {
         let (properties, usage) = match memory {
-            Memory::Default => (
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-                vma::MemoryUsage::AutoPreferDevice
+            Memory::Default | Memory::AccelerationStructureInput => (
+                vk::MemoryPropertyFlags::HOST_VISIBLE
+                    | vk::MemoryPropertyFlags::HOST_COHERENT,
+                vma::MemoryUsage::AutoPreferDevice,
             ),
-            Memory::Gpu => (
+            Memory::Gpu | Memory::AccelerationStructureStorage => (
                 vk::MemoryPropertyFlags::DEVICE_LOCAL,
                 vma::MemoryUsage::AutoPreferDevice,
             ),
             Memory::Readback => (
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_CACHED,
+                vk::MemoryPropertyFlags::HOST_VISIBLE
+                    | vk::MemoryPropertyFlags::HOST_COHERENT
+                    | vk::MemoryPropertyFlags::HOST_CACHED,
                 vma::MemoryUsage::AutoPreferDevice,
             )
         };
@@ -1450,6 +1500,12 @@ impl Gpu {
                     | vk::BufferUsageFlags::STORAGE_BUFFER
                     | vk::BufferUsageFlags::TRANSFER_DST
                     | vk::BufferUsageFlags::INDIRECT_BUFFER,
+            Memory::AccelerationStructureInput =>
+                vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            Memory::AccelerationStructureStorage =>
+                vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         };
 
         let length = vk::DeviceSize::try_from(layout.size()).expect("buffer size too large");
