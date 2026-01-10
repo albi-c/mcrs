@@ -71,10 +71,10 @@ mat3 getTBN(vec3 p, vec3 n) {
     return mat3(T * invmax, B * invmax, n);
 }
 
-vec3 getSampledNormal(uint tex, vec3 viewPos) {
+vec3 getSampledNormal(uint tex, vec3 viewPos, float strength) {
     mat3 tbn = getTBN(inWorldPos - viewPos, normalize(inNormal));
     vec3 map = texture(sampler2D(textures[nonuniformEXT(tex)], samplers[0]), inUv).rgb * 2.0 - 1.0;
-    return normalize(tbn * map);
+    return normalize(tbn * normalize(map * vec3(1.0, 1.0, 1.0 / max(strength * 3.0, 0.1))));
 }
 
 void main() {
@@ -104,8 +104,7 @@ void main() {
 
     vec4 diffuseAndNormal = readPacked(inMat.z);
     vec3 diffuse = diffuseAndNormal.rgb;
-    // normal factor is unused
-//    float normalFactor = diffuseAndNormal.a;
+    float normalFactor = diffuseAndNormal.a;
 
     vec4 specularAndExp = readPacked(inMat.w);
     // specular is unused
@@ -118,7 +117,7 @@ void main() {
     FragData d = data.frag;
     vec3 viewPos = vec3(d.viewX, d.viewY, d.viewZ);
 
-    vec3 normal = texDisp == texDiffuse ? inNormal : getSampledNormal(texDisp, viewPos);
+    vec3 normal = texDisp == texDiffuse ? inNormal : getSampledNormal(texDisp, viewPos, normalFactor);
 
     uint lightCount = d.lightCount;
     FragDataLights lights = d.lights;

@@ -194,6 +194,14 @@ pub struct PipelineLayout {
 }
 
 impl PipelineLayout {
+    pub const ALL_GRAPHICS_STAGES: vk::ShaderStageFlags = vk::ShaderStageFlags::from_bits(
+        vk::ShaderStageFlags::VERTEX.bits()
+            | vk::ShaderStageFlags::FRAGMENT.bits()
+            | vk::ShaderStageFlags::MESH_EXT.bits()).unwrap();
+    pub const ALL_STAGES: vk::ShaderStageFlags = vk::ShaderStageFlags::from_bits(
+        Self::ALL_GRAPHICS_STAGES.bits()
+            | vk::ShaderStageFlags::COMPUTE.bits()).unwrap();
+
     pub const MAX_TEXTURES: u32 = 65536;
     pub const MAX_TEXTURES_RW: u32 = 8192;
     pub const MAX_SAMPLERS: u32 = 1024;
@@ -203,7 +211,7 @@ impl PipelineLayout {
             .binding(0)
             .descriptor_type(ty)
             .descriptor_count(count)
-            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::MESH_EXT);
+            .stage_flags(Self::ALL_STAGES);
         let bindings = [binding];
         let info = vk::DescriptorSetLayoutCreateInfo::builder()
             .flags(vk::DescriptorSetLayoutCreateFlags::DESCRIPTOR_BUFFER_EXT)
@@ -214,8 +222,12 @@ impl PipelineLayout {
     pub fn new(device: &Device) -> Result<Self> {
         let push_constant_ranges = [
             vk::PushConstantRange::builder()
-                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::MESH_EXT)
+                .stage_flags(Self::ALL_GRAPHICS_STAGES)
                 .size(16),
+            vk::PushConstantRange::builder()
+                .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                .size(8)
+                .offset(16),
         ];
         let set_layouts = [
             Self::create_descriptor_set_layout(device, vk::DescriptorType::SAMPLED_IMAGE, Self::MAX_TEXTURES)?,
@@ -424,7 +436,8 @@ fn check_device(instance: &Instance, device: vk::PhysicalDevice, surface: vk::Su
 
     let properties = unsafe { instance.get_physical_device_queue_family_properties(device) };
     let graphics = properties.iter()
-        .position(|p| p.queue_flags.contains(vk::QueueFlags::GRAPHICS | vk::QueueFlags::TRANSFER))
+        .position(|p| p.queue_flags.contains(
+            vk::QueueFlags::GRAPHICS | vk::QueueFlags::TRANSFER | vk::QueueFlags::COMPUTE))
         .ok_or_else(|| anyhow!("missing gpu graphics queue"))? as u32;
     let present = properties.iter()
         .enumerate()
@@ -636,14 +649,14 @@ pub fn get_stage(stage: ShaderStage) -> vk::ShaderStageFlags {
         ShaderStage::Vertex => vk::ShaderStageFlags::VERTEX,
         ShaderStage::Pixel => vk::ShaderStageFlags::FRAGMENT,
         ShaderStage::Mesh => vk::ShaderStageFlags::MESH_EXT,
+        ShaderStage::Compute => vk::ShaderStageFlags::COMPUTE,
     }
 }
 
 fn get_next_stage(stage: ShaderStage) -> vk::ShaderStageFlags {
     match stage {
-        ShaderStage::Vertex => vk::ShaderStageFlags::FRAGMENT,
-        ShaderStage::Pixel => vk::ShaderStageFlags::empty(),
-        ShaderStage::Mesh => vk::ShaderStageFlags::FRAGMENT,
+        ShaderStage::Vertex | ShaderStage::Mesh => vk::ShaderStageFlags::FRAGMENT,
+        ShaderStage::Pixel | ShaderStage::Compute => vk::ShaderStageFlags::empty(),
     }
 }
 

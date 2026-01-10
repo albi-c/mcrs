@@ -321,6 +321,10 @@ fn load_scene<'a>(gpu: &'a gpu::Gpu, scene: gltf::Scene<'_>, buffers: &[gltf::bu
         Ok(())
     })?;
 
+    meshopt::optimize::optimize_vertex_cache_in_place(indices, vertices.len());
+    meshopt::optimize::optimize_overdraw_in_place_decoder(indices, vertices, 1.05);
+    meshopt::optimize::optimize_vertex_fetch_in_place(indices, vertices);
+
     queue_submit.wait();
 
     Ok(Scene {

@@ -30,6 +30,18 @@ impl Vertex {
     }
 }
 
+impl meshopt::DecodePosition for Vertex {
+    fn decode_position(&self) -> [f32; 3] {
+        self.0.map(|x| x.to_f32())
+    }
+}
+
+impl Default for Vertex {
+    fn default() -> Self {
+        Self::zeroed()
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct Material {
@@ -151,6 +163,7 @@ struct Shaders<'a> {
 
     pub mesh_post: gpu::Shader<'a>,
     pub pixel_post: gpu::Shader<'a>,
+    pub compute_post: gpu::Shader<'a>,
 }
 
 pub struct Application<'a> {
@@ -199,6 +212,13 @@ impl<'a> Application<'a> {
         //     gpu, "models/Sponza_gltf/glTF/Sponza.gltf",
         //     &mut tex_descriptors, 1)?;
 
+        // TODO: compute queue, compute, texture.view_rw
+        // TODO: conditional rendering
+        // TODO: particles using compute, fluctuating light
+        // TODO: fsr
+        // TODO: ray query for shadows
+        // TODO: point shadows using multi view
+
         let intensity = 1.5;
         let color = Vec3A::new(0.85, 0.65, 0.05);
         let lights = gpu.allocator().alloc_data(&[
@@ -236,6 +256,8 @@ impl<'a> Application<'a> {
                                              gpu::ShaderStage::Mesh)?,
                 pixel_post: gpu.create_shader(&fs::read("shaders/frag_post.spv")?,
                                               gpu::ShaderStage::Pixel)?,
+                compute_post: gpu.create_shader(&fs::read("shaders/comp_post.spv")?,
+                                                gpu::ShaderStage::Compute)?,
             },
             queue,
             frame_semaphore: gpu.create_semaphore(0)?,
@@ -444,6 +466,9 @@ impl<'a> Application<'a> {
             gpu::DevicePointer::null(), post_pixel_data.device(),
             (1, 1, 1));
         command_buffer.end_render_pass();
+
+        // command_buffer.bind_compute_shader(&self.shaders.compute_post);
+        // command_buffer.dispatch(gpu::DevicePointer::null(), (1, 1, 1));
 
         self.queue.submit(command_buffer, &self.frame_semaphore, self.next_frame)?;
         self.gpu.swapchain_present(&self.frame_semaphore, self.next_frame)?;

@@ -240,6 +240,7 @@ pub enum ShaderStage {
     Vertex,
     Pixel,
     Mesh,
+    Compute,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -1053,8 +1054,20 @@ impl<'a> CommandBuffer<'a> {
         }
     }
 
-    pub fn dispatch(&mut self, data: DevicePointer, dimensions: (u32, u32, u32)) {
-        todo!()
+    fn push_compute_pipeline_data(&mut self, data: DevicePointer) {
+        unsafe {
+            self.gpu.device.cmd_push_constants(self.buffer, self.gpu.pipeline_layout.layout,
+                                               vk::ShaderStageFlags::COMPUTE,
+                                               16, bytemuck::cast_slice(&[data]));
+        }
+    }
+    pub fn bind_compute_shader(&mut self, shader: &Shader<'_>) {
+        unsafe { self.gpu.device.cmd_bind_shaders_ext(
+            self.buffer, &[vk::ShaderStageFlags::COMPUTE], &[shader.shader]) };
+    }
+    pub fn dispatch(&mut self, data: DevicePointer, (x, y, z): (u32, u32, u32)) {
+        self.push_compute_pipeline_data(data);
+        unsafe { self.gpu.device.cmd_dispatch(self.buffer, x, y, z) };
     }
     pub fn dispatch_indirect(&mut self, data: DevicePointer, dimensions: DevicePointer) {
         todo!()
@@ -1431,11 +1444,14 @@ impl Gpu {
                     | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                     | vk::BufferUsageFlags::INDEX_BUFFER
                     | vk::BufferUsageFlags::STORAGE_BUFFER
-                    | vk::BufferUsageFlags::TRANSFER_SRC,
-            Memory::Gpu => vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-                | vk::BufferUsageFlags::INDEX_BUFFER
-                | vk::BufferUsageFlags::STORAGE_BUFFER
-                | vk::BufferUsageFlags::TRANSFER_DST,
+                    | vk::BufferUsageFlags::TRANSFER_SRC
+                    | vk::BufferUsageFlags::INDIRECT_BUFFER,
+            Memory::Gpu =>
+                vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                    | vk::BufferUsageFlags::INDEX_BUFFER
+                    | vk::BufferUsageFlags::STORAGE_BUFFER
+                    | vk::BufferUsageFlags::TRANSFER_DST
+                    | vk::BufferUsageFlags::INDIRECT_BUFFER,
         };
 
         let length = vk::DeviceSize::try_from(layout.size()).expect("buffer size too large");
@@ -1655,6 +1671,7 @@ impl Gpu {
     pub fn create_queue(&self, ty: QueueType) -> Result<Queue<'_>> {
         Ok(match ty {
             QueueType::Graphics => self.queues.graphics(self),
+            QueueType::Compute => self.queues.graphics(self),
             _ => panic!("unsupported queue type: {:?}", ty),
         })
     }

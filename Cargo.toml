@@ -29,3 +29,4 @@ lz4 = "1.28.1"
 gltf = { version = "1.4.1", features = ["utils"] }
 itertools = "0.14.0"
 half = { version = "2.7.1", features = ["bytemuck"] }
+meshopt = "0.6.2"
