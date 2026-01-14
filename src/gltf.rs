@@ -75,7 +75,7 @@ fn _visit_nodes_impl<'a>(nodes: impl IntoIterator<Item = gltf::Node<'a>>,
 
 fn visit_nodes<'a>(nodes: impl IntoIterator<Item = gltf::Node<'a>>,
                    mut visitor: impl FnMut(gltf::Node<'a>, &Mat4, &Mat3) -> Result<()>) -> Result<()> {
-    _visit_nodes_impl(nodes, &mut visitor, &Mat4::default(), &Mat3::default())
+    _visit_nodes_impl(nodes, &mut visitor, &Mat4::IDENTITY, &Mat3::IDENTITY)
 }
 
 fn visit_meshes<'a>(nodes: impl IntoIterator<Item = gltf::Node<'a>>,

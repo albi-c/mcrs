@@ -1,19 +1,19 @@
-#version 450
+#version 460
 
 #include "common.glsl"
+#extension GL_EXT_ray_query : require
 
 layout(location = 0) in vec2 inUv;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) flat in uvec4 inMat;
 layout(location = 3) in vec3 inWorldPos;
-//layout(location = 4) in vec3 inTangent;
-//layout(location = 5) in vec3 inBitangent;
 
 layout(location = 0) out vec4 outColor;
 
 layout(set = 0, binding = 0) uniform texture2D textures[];
 layout(set = 1, binding = 0) uniform writeonly image2D textures_rw[];
 layout(set = 2, binding = 0) uniform sampler samplers[];
+layout(set = 3, binding = 0) uniform accelerationStructureEXT accelerationStructures[];
 
 struct Light {
     vec4 posAndIntensity;
@@ -48,7 +48,20 @@ vec4 readPacked(uint packed) {
 }
 
 vec3 getLight(in vec3 normal, in vec3 viewDir, float specExp, float metallic, float roughness, in Light light, out vec3 specular) {
-    vec3 lightDir = normalize(light.posAndIntensity.xyz - inWorldPos);
+    vec3 lightDiff = light.posAndIntensity.xyz - inWorldPos;
+    float lightDist = length(lightDiff);
+    vec3 lightDir = lightDiff / lightDist;
+
+    rayQueryEXT query;
+    rayQueryInitializeEXT(
+        query, accelerationStructures[0], gl_RayFlagsTerminateOnFirstHitEXT, 0xff, inWorldPos, 0.01,
+        lightDir, lightDist
+    );
+    rayQueryProceedEXT(query);
+    if (rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+        return vec3(0.0);
+    }
+
     float intDiff = max(0.0, dot(normal, lightDir));
     vec3 halfDir = normalize(lightDir + viewDir);
     float intSpec = pow(max(dot(normal, halfDir), 0.0), max(specExp, 1.0) * 12.0) * metallic;

@@ -859,35 +859,38 @@ impl<'a> Queue<'a> {
             .push_next(&mut semaphore_info);
 
         if let Err(e) = unsafe { gpu.device.queue_submit(self.queue, &[info], vk::Fence::null()) } {
-            if e == vk::ErrorCode::DEVICE_LOST {
-                log::error!("-- DEVICE LOST --");
-                let mut count = vk::DeviceFaultCountsEXT::default();
-                unsafe { gpu.device.get_device_fault_info_ext(&mut count, None)
-                    .expect("failed to get device fault info") };
-                let mut address_infos =
-                    vec![vk::DeviceFaultAddressInfoEXT::default(); count.address_info_count as usize];
-                let mut vendor_infos =
-                    vec![vk::DeviceFaultVendorInfoEXT::default(); count.vendor_info_count as usize];
-                let mut vendor_data = vec![0u8; count.vendor_binary_size as usize];
-                let mut info = vk::DeviceFaultInfoEXT::builder()
-                    .address_infos(unsafe { &mut *address_infos.as_mut_ptr() })
-                    .vendor_infos(unsafe { &mut *vendor_infos.as_mut_ptr() })
-                    .vendor_binary_data(unsafe { &mut *vendor_data.as_mut_ptr() });
-                unsafe { gpu.device.get_device_fault_info_ext(&mut count, Some(&mut info))
-                    .expect("failed to get device fault info") };
-                println!("Error description: {}", info.description);
-                for addr in address_infos {
-                    println!("Address info: reported {:#x?}, precision {:#x?}, type {:?}",
-                             addr.reported_address, addr.address_precision, addr.address_type);
+            #[cfg(feature = "device-fault")]
+            {
+                if e == vk::ErrorCode::DEVICE_LOST {
+                    log::error!("-- DEVICE LOST --");
+                    let mut count = vk::DeviceFaultCountsEXT::default();
+                    unsafe { gpu.device.get_device_fault_info_ext(&mut count, None)
+                        .expect("failed to get device fault info") };
+                    let mut address_infos =
+                        vec![vk::DeviceFaultAddressInfoEXT::default(); count.address_info_count as usize];
+                    let mut vendor_infos =
+                        vec![vk::DeviceFaultVendorInfoEXT::default(); count.vendor_info_count as usize];
+                    let mut vendor_data = vec![0u8; count.vendor_binary_size as usize];
+                    let mut info = vk::DeviceFaultInfoEXT::builder()
+                        .address_infos(unsafe { &mut *address_infos.as_mut_ptr() })
+                        .vendor_infos(unsafe { &mut *vendor_infos.as_mut_ptr() })
+                        .vendor_binary_data(unsafe { &mut *vendor_data.as_mut_ptr() });
+                    unsafe { gpu.device.get_device_fault_info_ext(&mut count, Some(&mut info))
+                        .expect("failed to get device fault info") };
+                    println!("Error description: {}", info.description);
+                    for addr in address_infos {
+                        println!("Address info: reported {:#x?}, precision {:#x?}, type {:?}",
+                                 addr.reported_address, addr.address_precision, addr.address_type);
+                    }
+                    for vendor in vendor_infos {
+                        println!("Vendor info: {}, fault code {}, fault data {}",
+                                 vendor.description, vendor.vendor_fault_code, vendor.vendor_fault_data);
+                    }
+                    if !vendor_data.is_empty() {
+                        println!("Got {} bytes of vendor data", vendor_data.len());
+                    }
+                    log::error!("-- DEVICE LOST --");
                 }
-                for vendor in vendor_infos {
-                    println!("Vendor info: {}, fault code {}, fault data {}",
-                             vendor.description, vendor.vendor_fault_code, vendor.vendor_fault_data);
-                }
-                if !vendor_data.is_empty() {
-                    println!("Got {} bytes of vendor data", vendor_data.len());
-                }
-                log::error!("-- DEVICE LOST --");
             }
             Err(e)?;
         }
@@ -1027,14 +1030,16 @@ impl<'a> CommandBuffer<'a> {
         todo!()
     }
 
-    pub fn set_texture_heap(&mut self, textures: Option<&DescriptorHeap<'_>>,
-                            textures_rw: Option<&DescriptorHeap<'_>>, samplers: Option<&DescriptorHeap<'_>>) {
+    pub fn set_descriptor_heap(&mut self, textures: Option<&DescriptorHeap<'_>>,
+                               textures_rw: Option<&DescriptorHeap<'_>>, samplers: Option<&DescriptorHeap<'_>>,
+                               accel_structs: Option<&DescriptorHeap<'_>>,) {
         let pointers = [
             textures.map(|heap| heap.device()).unwrap_or(DevicePointer::null()),
             textures_rw.map(|heap| heap.device()).unwrap_or(DevicePointer::null()),
             samplers.map(|heap| heap.device()).unwrap_or(DevicePointer::null()),
+            accel_structs.map(|heap| heap.device()).unwrap_or(DevicePointer::null()),
         ];
-        let mut infos = [vk::DescriptorBufferBindingInfoEXT::default(); 3];
+        let mut infos = [vk::DescriptorBufferBindingInfoEXT::default(); 4];
         let mut index = 0;
         for &pointer in &pointers {
             if pointer.is_null() {
@@ -1595,6 +1600,9 @@ impl Gpu {
     }
     pub fn alloc_sampler_descriptor_heap(&self) -> Result<DescriptorHeap<'_>> {
         self.alloc_descriptor_heap(PipelineLayout::MAX_SAMPLERS, self.descriptor_sizes.sampler)
+    }
+    pub fn alloc_accel_struct_descriptor_heap(&self) -> Result<DescriptorHeap<'_>> {
+        self.alloc_descriptor_heap(PipelineLayout::MAX_ACCEL_STRUCTS, self.descriptor_sizes.accel_struct)
     }
 
     pub fn allocator(&self) -> GpuMemoryAllocator<'_> {

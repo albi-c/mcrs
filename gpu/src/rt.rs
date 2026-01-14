@@ -1,20 +1,10 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use anyhow::Result;
-use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use vulkanalia::vk;
-use vulkanalia::vk::{Handle, HasBuilder, KhrAccelerationStructureExtensionDeviceCommands};
+use vulkanalia::vk::{ExtDescriptorBufferExtensionDeviceCommands, Handle, HasBuilder, KhrAccelerationStructureExtensionDeviceCommands};
 use crate::{Allocation, CommandBuffer, DevicePointer, Gpu, HasIndexType, Memory, MemoryAllocation, MemoryAllocator};
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct GeometryFlags(u32);
-bitflags! {
-    impl GeometryFlags : u32 {
-        const Opaque = vk::GeometryFlagsKHR::OPAQUE.bits();
-        const NoDuplicateAnyHitInvocation = vk::GeometryFlagsKHR::NO_DUPLICATE_ANY_HIT_INVOCATION.bits();
-    }
-}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 #[repr(i32)]
@@ -41,7 +31,7 @@ fn build<'b, 'a: 'b>(
         vk::AccelerationStructureBuildTypeKHR::DEVICE, &build_info, primitive_counts, &mut build_sizes) };
 
     let buffer = gpu.alloc_mem_aligned::<u8>(
-        build_sizes.acceleration_structure_size as usize, 64, Memory::AccelerationStructureStorage)?;
+        build_sizes.acceleration_structure_size as usize, 256, Memory::AccelerationStructureStorage)?;
     let create_info = vk::AccelerationStructureCreateInfoKHR::builder()
         .buffer(buffer.buffer)
         .size(build_sizes.acceleration_structure_size)
@@ -82,7 +72,7 @@ pub struct BottomLevelASBuilder<'a> {
 impl<'a> BottomLevelASBuilder<'a> {
     pub fn geometry<T: Pod + Debug, I: HasIndexType>(
         &mut self, vertices: Allocation<'a, T>, vertex_format: VertexFormat, indices: Allocation<'a, I>,
-        transform: Allocation<'a, [[f32; 4]; 3]>, transform_index: u32, flags: GeometryFlags,
+        transform: Allocation<'a, [[f32; 4]; 3]>, transform_index: u32,
     ) {
         let vert_count = u32::try_from(vertices.len()).expect("too many vertices");
         let idx_count = u32::try_from(indices.len()).expect("too many indices");
@@ -100,7 +90,7 @@ impl<'a> BottomLevelASBuilder<'a> {
         };
         let geom = vk::AccelerationStructureGeometryKHR::builder()
             .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
-            .flags(vk::GeometryFlagsKHR::from_bits(flags.bits()).expect("invalid flags"))
+            .flags(vk::GeometryFlagsKHR::OPAQUE)
             .geometry(data)
             .build();
         let range = vk::AccelerationStructureBuildRangeInfoKHR::builder()
@@ -123,11 +113,18 @@ impl<'a> BottomLevelASBuilder<'a> {
             gpu, cmd_buf, &self.geometries, &self.triangle_counts, &self.build_ranges,
             vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)?;
 
+        let info = vk::AccelerationStructureDeviceAddressInfoKHR::builder()
+            .acceleration_structure(structure);
+        let device_address = unsafe { gpu.device.get_acceleration_structure_device_address_khr(&info) };
+
+        cmd_buf.give_ownership(self.buffers);
+
         Ok(BottomLevelAS {
             gpu,
             structure,
             device,
             buffer,
+            device_address,
         })
     }
 }
@@ -138,6 +135,7 @@ pub struct BottomLevelAS<'a> {
     structure: vk::AccelerationStructureKHR,
     device: DevicePointer,
     buffer: Allocation<'a, u8>,
+    device_address: vk::DeviceAddress,
 }
 
 impl<'a> BottomLevelAS<'a> {
@@ -171,9 +169,9 @@ impl<'a> TopLevelASBuilder<'a> {
             .instance_custom_index::<u32>(0)
             .mask::<u32>(0xff)
             .instance_shader_binding_table_record_offset::<u32>(0)
-            // maybe wrong flag type
             .flags::<u32>(vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.bits())
             .acceleration_structure_reference(bottom_level_as.structure.as_raw())
+            // .acceleration_structure_reference(bottom_level_as.device_address)
             .build();
         self.instances.push(AccelerationStructureInstanceWrapper(instance));
     }
@@ -228,6 +226,18 @@ pub struct TopLevelAS<'a> {
 impl<'a> TopLevelAS<'a> {
     pub fn builder() -> TopLevelASBuilder<'a> {
         Default::default()
+    }
+
+    pub fn descriptor(&self, descriptor: &mut [u8]) {
+        assert_eq!(descriptor.len(), self.gpu.descriptor_sizes.accel_struct,
+                   "incorrect buffer size for acceleration structure descriptor");
+
+        let info = vk::DescriptorGetInfoEXT::builder()
+            .type_(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+            .data(vk::DescriptorDataEXT {
+                acceleration_structure: self.device.0,
+            });
+        unsafe { self.gpu.device.get_descriptor_ext(&info, descriptor) };
     }
 }
 

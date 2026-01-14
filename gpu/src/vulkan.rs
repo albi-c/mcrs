@@ -38,6 +38,7 @@ const EXTENSION_REQUIREMENTS: &[vk::ExtensionName] = &[
     vk::KHR_DEFERRED_HOST_OPERATIONS_EXTENSION.name,
     vk::KHR_RAY_QUERY_EXTENSION.name,
     vk::KHR_ACCELERATION_STRUCTURE_EXTENSION.name,
+    #[cfg(feature = "device-fault")]
     vk::EXT_DEVICE_FAULT_EXTENSION.name,
 ];
 
@@ -194,7 +195,7 @@ impl Queues {
 #[derive(Debug)]
 pub struct PipelineLayout {
     pub layout: vk::PipelineLayout,
-    pub set_layouts: [vk::DescriptorSetLayout; 3],
+    pub set_layouts: [vk::DescriptorSetLayout; 4],
 }
 
 impl PipelineLayout {
@@ -209,6 +210,7 @@ impl PipelineLayout {
     pub const MAX_TEXTURES: u32 = 65536;
     pub const MAX_TEXTURES_RW: u32 = 8192;
     pub const MAX_SAMPLERS: u32 = 1024;
+    pub const MAX_ACCEL_STRUCTS: u32 = 4;
 
     fn create_descriptor_set_layout(device: &Device, ty: vk::DescriptorType, count: u32) -> Result<vk::DescriptorSetLayout> {
         let binding = vk::DescriptorSetLayoutBinding::builder()
@@ -233,6 +235,7 @@ impl PipelineLayout {
             Self::create_descriptor_set_layout(device, vk::DescriptorType::SAMPLED_IMAGE, Self::MAX_TEXTURES)?,
             Self::create_descriptor_set_layout(device, vk::DescriptorType::STORAGE_IMAGE, Self::MAX_TEXTURES_RW)?,
             Self::create_descriptor_set_layout(device, vk::DescriptorType::SAMPLER, Self::MAX_SAMPLERS)?,
+            Self::create_descriptor_set_layout(device, vk::DescriptorType::ACCELERATION_STRUCTURE_KHR, Self::MAX_ACCEL_STRUCTS)?,
         ];
         let info = vk::PipelineLayoutCreateInfo::builder()
             .set_layouts(&set_layouts)
@@ -259,6 +262,7 @@ pub struct DescriptorSizes {
     pub sampled_texture: usize,
     pub storage_texture: usize,
     pub sampler: usize,
+    pub accel_struct: usize,
 }
 
 impl DescriptorSizes {
@@ -274,6 +278,7 @@ impl DescriptorSizes {
             sampled_texture: prop.sampled_image_descriptor_size,
             storage_texture: prop.storage_image_descriptor_size,
             sampler: prop.sampler_descriptor_size,
+            accel_struct: prop.acceleration_structure_descriptor_size,
         }
     }
 }
@@ -646,8 +651,12 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         .push_next(&mut info_descriptor_buffer)
         .push_next(&mut info_mesh_shader)
         .push_next(&mut info_ray_query)
-        .push_next(&mut info_acceleration_structure)
-        .push_next(&mut info_device_fault);
+        .push_next(&mut info_acceleration_structure);
+    let info = if cfg!(feature = "device-fault") {
+        info.push_next(&mut info_device_fault)
+    } else {
+        info
+    };
     let device = unsafe { instance.create_device(physical_device, &info, None)? };
 
     Ok(device)

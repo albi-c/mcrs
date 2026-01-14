@@ -3,6 +3,10 @@ name = "gpu"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["device-fault"]
+device-fault = []
+
 [dependencies]
 bytemuck = { workspace = true }
 bitflags = "2.10.0"

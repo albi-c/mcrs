@@ -11,7 +11,7 @@ use half::f16;
 use image::{EncodableLayout, ImageReader};
 use winit::event::ElementState;
 use winit::keyboard::{KeyCode, PhysicalKey};
-use gpu::{CommandBuffer, MemoryAllocation, MemoryAllocator, Queue};
+use gpu::{MemoryAllocation, MemoryAllocator};
 use crate::gltf;
 
 const FRAMES_IN_FLIGHT: u64 = 2;
@@ -166,6 +166,11 @@ struct Shaders<'a> {
     pub compute_post: gpu::Shader<'a>,
 }
 
+struct RayTracing<'a> {
+    bl: gpu::rt::BottomLevelAS<'a>,
+    tl: gpu::rt::TopLevelAS<'a>,
+}
+
 pub struct Application<'a> {
     gpu: &'a gpu::Gpu,
     shaders: Shaders<'a>,
@@ -178,9 +183,11 @@ pub struct Application<'a> {
     textures: WindowSizedTextures<'a>,
     tex_descriptors: gpu::DescriptorHeap<'a>,
     sampler_descriptors: gpu::DescriptorHeap<'a>,
+    accel_struct_descriptors: gpu::DescriptorHeap<'a>,
 
     gltf: gltf::Model<'a>,
     lights: gpu::Allocation<'a, Light>,
+    rt: RayTracing<'a>,
 
     keys: HashMap<PhysicalKey, bool>,
     camera_pos: Vec3,
@@ -188,28 +195,25 @@ pub struct Application<'a> {
     camera_look: Vec2,
 }
 
-fn create_bottom_level_as<'a>(gpu: &'a gpu::Gpu, queue: &Queue<'a>) -> Result<gpu::rt::BottomLevelAS<'a>> {
+fn create_bottom_level_as<'a>(gpu: &'a gpu::Gpu, queue: &gpu::Queue<'a>, scene: &gltf::Scene<'a>) -> Result<gpu::rt::BottomLevelAS<'a>> {
     let allocator = gpu.allocator_mem(gpu::Memory::AccelerationStructureInput);
     let mut bl_as = gpu::rt::BottomLevelAS::builder();
-    let vertices = allocator.alloc_data(&[
-        [0.0f32, 0.0, 0.0],
-        [10.0, 0.0, 0.0],
-        [0.0, 10.0, 0.0],
-    ])?;
-    let indices = allocator.alloc_data(&[0u32, 1, 2])?;
-    let mat = Mat4::default();
+    let mut vertices = allocator.alloc(scene.vertices.len())?;
+    for (dst, src) in vertices.host_mut().into_iter().zip(scene.vertices.host()) {
+        *dst = src.0.map(|x| x.to_f32());
+    }
+    let indices = allocator.alloc_data(scene.indices.host())?;
     let transform_data = [
-        mat.row(0).to_array(),
-        mat.row(1).to_array(),
-        mat.row(2).to_array(),
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
     ];
 
     let mut cmd_buf = queue.create_buffer()?;
 
     let transform = allocator.alloc_data(&[transform_data])?;
     bl_as.geometry(
-        vertices, gpu::rt::VertexFormat::XYZ32Float, indices,
-        transform, 0, gpu::rt::GeometryFlags::Opaque);
+        vertices, gpu::rt::VertexFormat::XYZ32Float, indices, transform, 0);
     let bl_as = bl_as.build(gpu, &mut cmd_buf)?;
 
     queue.submit_no_signal(cmd_buf)?.wait();
@@ -217,12 +221,12 @@ fn create_bottom_level_as<'a>(gpu: &'a gpu::Gpu, queue: &Queue<'a>) -> Result<gp
     Ok(bl_as)
 }
 
-fn create_top_level_as<'a>(gpu: &'a gpu::Gpu, queue: &Queue<'a>, bl_as: &gpu::rt::BottomLevelAS<'a>) -> Result<gpu::rt::TopLevelAS<'a>> {
-    let mat = Mat4::default();
+fn create_top_level_as<'a>(gpu: &'a gpu::Gpu, queue: &gpu::Queue<'a>,
+                           bl_as: &gpu::rt::BottomLevelAS<'a>) -> Result<gpu::rt::TopLevelAS<'a>> {
     let transform_data = [
-        mat.row(0).to_array(),
-        mat.row(1).to_array(),
-        mat.row(2).to_array(),
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
     ];
 
     let mut cmd_buf = queue.create_buffer()?;
@@ -246,6 +250,7 @@ impl<'a> Application<'a> {
 
         let mut tex_descriptors = gpu.alloc_texture_descriptor_heap()?;
         let mut sampler_descriptors = gpu.alloc_sampler_descriptor_heap()?;
+        let mut accel_struct_descriptors = gpu.alloc_accel_struct_descriptor_heap()?;
 
         gpu.sampler_descriptor(gpu::SamplerDesc {
             ..Default::default()
@@ -253,15 +258,16 @@ impl<'a> Application<'a> {
 
         queue.submit_no_signal(command_buffer)?.wait();
 
-        let bl_as = create_bottom_level_as(gpu, &queue)?;
-        let tl_as = create_top_level_as(gpu, &queue, &bl_as)?;
-
         let gltf = load_gltf_cached(
             "models/Sponza_gltf/glTF/Sponza.gltf", "models/sponza_gltf.cache",
             gpu, &mut tex_descriptors, 1)?;
         // let gltf = gltf::Model::load(
         //     gpu, "models/Sponza_gltf/glTF/Sponza.gltf",
         //     &mut tex_descriptors, 1)?;
+
+        let bl_as = create_bottom_level_as(gpu, &queue, &gltf.scenes[0])?;
+        let tl_as = create_top_level_as(gpu, &queue, &bl_as)?;
+        tl_as.descriptor(&mut accel_struct_descriptors[0]);
 
         // TODO: compute queue, compute, texture.view_rw
         // TODO: conditional rendering
@@ -271,6 +277,7 @@ impl<'a> Application<'a> {
         // TODO: point shadows using multi view
         // TODO: model loading abstraction
         // TODO: synchronization 2 everywhere
+        // TODO: shader auto build
 
         let intensity = 1.5;
         let color = Vec3A::new(0.85, 0.65, 0.05);
@@ -323,9 +330,14 @@ impl<'a> Application<'a> {
             textures,
             tex_descriptors,
             sampler_descriptors,
+            accel_struct_descriptors,
 
             gltf,
             lights,
+            rt: RayTracing {
+                bl: bl_as,
+                tl: tl_as,
+            },
 
             keys: HashMap::new(),
             camera_pos: Vec3::new(0.0, 0.0, 0.0),
@@ -433,7 +445,7 @@ impl<'a> Application<'a> {
         );
         let mat_flip = Mat4::from_scale(Vec3::new(1.0, -1.0, 1.0));
         let mat_view = self.get_view_matrix();
-        let mat_model = Mat4::default();
+        let mat_model = Mat4::IDENTITY;
         let mat_mvp = mat_perspective * mat_flip * mat_view * mat_model;
 
         const { assert!(size_of::<Vertex>() == 16) };
@@ -486,10 +498,11 @@ impl<'a> Application<'a> {
         };
         command_buffer.begin_render_pass(&render_pass_desc);
         command_buffer.bind_shaders([&self.shaders.vertex, &self.shaders.pixel]);
-        command_buffer.set_texture_heap(
+        command_buffer.set_descriptor_heap(
             Some(&self.tex_descriptors),
             None,
             Some(&self.sampler_descriptors),
+            Some(&self.accel_struct_descriptors),
         );
         let indices = &self.gltf.scenes[0].indices;
         command_buffer.draw_indexed(
@@ -510,10 +523,11 @@ impl<'a> Application<'a> {
         };
         command_buffer.begin_render_pass(&post_pass_desc);
         command_buffer.bind_shaders([&self.shaders.mesh_post, &self.shaders.pixel_post]);
-        command_buffer.set_texture_heap(
+        command_buffer.set_descriptor_heap(
             Some(&self.tex_descriptors),
             None,
             Some(&self.sampler_descriptors),
+            Some(&self.accel_struct_descriptors),
         );
         command_buffer.draw_meshlets(
             gpu::DevicePointer::null(), post_pixel_data.device(),
