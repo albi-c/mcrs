@@ -15,4 +15,3 @@ vulkanalia = { workspace = true }
 vulkanalia-vma = "0.8.0"
 anyhow = { workspace = true }
 log = { workspace = true }
-glam = { workspace = true }

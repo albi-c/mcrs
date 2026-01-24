@@ -749,7 +749,6 @@ dependencies = [
  "anyhow",
  "bitflags 2.10.0",
  "bytemuck",
- "glam",
  "log",
  "smart-default",
  "vulkanalia",

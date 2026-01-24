@@ -1763,6 +1763,7 @@ impl Gpu {
         let next_image_index = match acquire_result {
             Ok((_, vk::SuccessCode::SUBOPTIMAL_KHR)) | Err(vk::ErrorCode::OUT_OF_DATE_KHR) => {
                 unsafe { self.device.destroy_fence(fence, None) };
+                drop(swapchain);
                 self.recreate_swapchain(ctx)?;
                 return self.next_swapchain_image(ctx, cmd_buf);
             },
