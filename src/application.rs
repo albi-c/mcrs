@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec2, Vec3, Vec3A, Vec4};
+use glam::{Mat4, Quat, Vec2, Vec3, Vec3A, Vec4};
 use half::f16;
 use image::{EncodableLayout, ImageReader};
 use winit::event::ElementState;
@@ -61,6 +61,24 @@ struct Light {
     pub color: Vec3A,
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct Particle {
+    pub pos: [f16; 3],
+    pub group: u16,
+    pub lifetime: f32,
+    pub vel: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct ParticleGroup {
+    pub spawn_pos: [f16; 3],
+    pub tex: u16,
+    pub scale: [f16; 2],
+    pub _padding: u32,
+}
+
 impl Material {
     pub fn pack_vec4(vec: Vec4) -> u32 {
         let vec = (vec * 255.0).clamp(Vec4::splat(0.0), Vec4::splat(255.0));
@@ -85,13 +103,14 @@ fn hash(value: impl Hash) -> u64 {
     hasher.finish()
 }
 
+const USE_IMAGE_CACHE: bool = false;
 fn load_image(path: impl AsRef<Path>, gpu: &gpu::Gpu) -> Result<(u32, u32, gpu::Allocation<'_, u8>)> {
     let cache_path = format!(
         "image_cache/{:016x}_{}", hash(path.as_ref()),
         path.as_ref().file_name()
             .expect("path has no file name").to_str()
             .expect("unable to convert path to string"));
-    if fs::exists(&cache_path)? {
+    if USE_IMAGE_CACHE && fs::exists(&cache_path)? {
         let mut file = fs::File::open(cache_path)?;
         let mut header = [0u32; 2];
         file.read_exact(bytemuck::cast_slice_mut(&mut header))?;
@@ -111,6 +130,8 @@ fn load_image(path: impl AsRef<Path>, gpu: &gpu::Gpu) -> Result<(u32, u32, gpu::
         let mut file = fs::File::create(cache_path)?;
         file.write_all(bytemuck::cast_slice(&[width, height]))?;
         let mut encoder = lz4::EncoderBuilder::new().level(9).build(file)?;
+        let length = width as usize * height as usize * 4;
+        assert_eq!(img.as_bytes().len(), length, "image length mismatch");
         encoder.write_all(img.as_bytes())?;
         Ok((img.width(), img.height(), alloc))
     }
@@ -164,6 +185,10 @@ struct Shaders<'a> {
     pub mesh_post: gpu::Shader<'a>,
     pub pixel_post: gpu::Shader<'a>,
     pub compute_post: gpu::Shader<'a>,
+
+    pub compute_particle: gpu::Shader<'a>,
+    pub vertex_particle: gpu::Shader<'a>,
+    pub pixel_particle: gpu::Shader<'a>,
 }
 
 struct RayTracing<'a> {
@@ -188,6 +213,10 @@ pub struct Application<'a> {
     gltf: gltf::Model<'a>,
     lights: gpu::Allocation<'a, Light>,
     rt: RayTracing<'a>,
+
+    particle_texture: gpu::Texture<'a>,
+    particle_groups: gpu::Allocation<'a, ParticleGroup>,
+    particles: gpu::Allocation<'a, Particle>,
 
     keys: HashMap<PhysicalKey, bool>,
     camera_pos: Vec3,
@@ -249,6 +278,9 @@ impl<'a> Application<'a> {
 
         let textures = Self::create_window_sized(gpu, ctx, &mut command_buffer)?;
 
+        let particle_texture = load_texture("textures/flame.png", gpu, &mut command_buffer)?;
+        let scale_x = particle_texture.dimensions().0 as f32 / particle_texture.dimensions().1 as f32;
+
         let mut tex_descriptors = gpu.alloc_texture_descriptor_heap()?;
         let mut sampler_descriptors = gpu.alloc_sampler_descriptor_heap()?;
         let mut accel_struct_descriptors = gpu.alloc_accel_struct_descriptor_heap()?;
@@ -261,7 +293,7 @@ impl<'a> Application<'a> {
 
         let gltf = load_gltf_cached(
             "models/Sponza_gltf/glTF/Sponza.gltf", "models/sponza_gltf.cache",
-            gpu, &mut tex_descriptors, 1)?;
+            gpu, &mut tex_descriptors, 2)?;
         // let gltf = gltf::Model::load(
         //     gpu, "models/Sponza_gltf/glTF/Sponza.gltf",
         //     &mut tex_descriptors, 1)?;
@@ -271,6 +303,7 @@ impl<'a> Application<'a> {
         let tl_as = create_top_level_as(gpu, &queue, &bl_as)?;
         tl_as.descriptor(&mut accel_struct_descriptors[0]);
 
+        // TODO: shader compilation at runtime, hot reload
         // TODO: compute queue, compute, texture.view_rw
         // TODO: conditional rendering
         // TODO: particles using compute, fluctuating light
@@ -281,30 +314,66 @@ impl<'a> Application<'a> {
         // TODO: synchronization 2 everywhere
         // TODO: shader auto build
 
-        let intensity = 1.5;
-        let color = Vec3A::new(0.85, 0.65, 0.05);
-        let lights = gpu.allocator().alloc_data(&[
+        const INTENSITY: f32 = 1.5;
+        const COLOR: Vec3A = Vec3A::new(0.85, 0.65, 0.05);
+        const LIGHTS: [Light; 4] = [
             Light {
                 pos: Vec3::new(-5.0, 1.3, 1.1),
-                intensity,
-                color,
+                intensity: INTENSITY,
+                color: COLOR,
             },
             Light {
                 pos: Vec3::new(-5.0, 1.3, -1.7),
-                intensity,
-                color,
+                intensity: INTENSITY,
+                color: COLOR,
             },
             Light {
                 pos: Vec3::new(3.9, 1.3, 1.1),
-                intensity,
-                color,
+                intensity: INTENSITY,
+                color: COLOR,
             },
             Light {
                 pos: Vec3::new(3.9, 1.3, -1.7),
-                intensity,
-                color,
+                intensity: INTENSITY,
+                color: COLOR,
             },
-        ])?;
+        ];
+        let lights = gpu.allocator().alloc_data(&LIGHTS)?;
+
+        let particle_groups = gpu.allocator().alloc_with_data(LIGHTS.len(), |i| {
+            let pos = LIGHTS[i].pos;
+            ParticleGroup {
+                spawn_pos: [
+                    f16::from_f32(pos.x),
+                    f16::from_f32(pos.y),
+                    f16::from_f32(pos.z),
+                ],
+                tex: 1,
+                scale: [
+                    f16::from_f32(0.0625f32),
+                    f16::from_f32(0.0625f32 * scale_x),
+                ],
+                _padding: 0,
+            }
+        })?;
+        const PARTICLES_PER_LIGHT: usize = 1024;
+        const PARTICLE_SPEED: f32 = 0.02;
+        let mut particles = gpu.allocator().alloc(LIGHTS.len() * PARTICLES_PER_LIGHT)?;
+        fn pcg_hash(input: u32) -> u32 {
+            let state = input.wrapping_mul(747796405).wrapping_add(2891336453);
+            let word = ((state >> ((state >> 28) + 4)) ^ state).wrapping_mul(277803737);
+            (word >> 22) ^ word
+        }
+        for group in 0..LIGHTS.len() {
+            for i in group * PARTICLES_PER_LIGHT..(group + 1) * PARTICLES_PER_LIGHT {
+                particles.host_mut()[i] = Particle {
+                    pos: Default::default(),
+                    group: group as u16,
+                    lifetime: pcg_hash(i as u32) as f32 / u32::MAX as f32 * 1.5,
+                    vel: (pcg_hash(i as u32) & ((1 << 24) - 1)) | (((255.0 * PARTICLE_SPEED) as u32) << 24),
+                }
+            }
+        }
 
         Ok(Self {
             gpu,
@@ -320,6 +389,13 @@ impl<'a> Application<'a> {
                                               gpu::ShaderStage::Pixel)?,
                 compute_post: gpu.create_shader(&fs::read("shaders/comp_post.spv")?,
                                                 gpu::ShaderStage::Compute)?,
+
+                compute_particle: gpu.create_shader(&fs::read("shaders/comp_particle.spv")?,
+                                                    gpu::ShaderStage::Compute)?,
+                vertex_particle: gpu.create_shader(&fs::read("shaders/vert_particle.spv")?,
+                                                   gpu::ShaderStage::Vertex)?,
+                pixel_particle: gpu.create_shader(&fs::read("shaders/frag_particle.spv")?,
+                                                  gpu::ShaderStage::Pixel)?,
             },
             queue,
             frame_semaphore: gpu.create_semaphore(0)?,
@@ -340,6 +416,10 @@ impl<'a> Application<'a> {
                 bl: bl_as,
                 tl: tl_as,
             },
+
+            particle_texture,
+            particle_groups,
+            particles,
 
             keys: HashMap::new(),
             camera_pos: Vec3::new(0.0, 0.0, 0.0),
@@ -426,6 +506,29 @@ impl<'a> Application<'a> {
         )
     }
 
+    fn update_particles(&self, cmd_buf: &mut gpu::CommandBuffer<'a>, arena: &gpu::Arena<'_>, dt: f32) -> Result<()> {
+        #[repr(C)]
+        #[derive(Copy, Clone, Debug, Pod, Zeroable)]
+        struct ComputeData {
+            particles: gpu::DevicePointer,
+            groups: gpu::DevicePointer,
+            dt: f32,
+            max_lifetime: f32,
+        }
+        let compute_data = arena.alloc_data(&[ComputeData {
+            particles: self.particles.device(),
+            groups: self.particle_groups.device(),
+            dt,
+            max_lifetime: 1.5,
+        }])?;
+
+        cmd_buf.bind_compute_shader(&self.shaders.compute_particle);
+        cmd_buf.dispatch(compute_data.device(), (self.particles.len() as u32 / 128, 1, 1));
+        cmd_buf.barrier_compute_to_vertex_shader();
+
+        Ok(())
+    }
+
     pub fn render(&mut self, time: f64, ctx: &dyn gpu::SwapchainContext) -> Result<()> {
         let last_time = self.last_time.replace(time).unwrap_or(time);
         let dt = (time - last_time) as f32;
@@ -436,6 +539,7 @@ impl<'a> Application<'a> {
         }
 
         self.textures.post_color.view_descriptor(&mut self.tex_descriptors[0])?;
+        self.particle_texture.view_descriptor(&mut self.tex_descriptors[1])?;
 
         let arena = self.get_frame_arena();
         arena.reset();
@@ -470,6 +574,16 @@ impl<'a> Application<'a> {
             self.camera_pos,
             self.lights.len() as u32,
             self.lights.device(),
+        )])?;
+
+        #[repr(C)]
+        #[derive(Copy, Clone, Debug, Pod, Zeroable)]
+        struct ParticleVertexData(Mat4, Mat4, gpu::DevicePointer, gpu::DevicePointer);
+        let particle_vertex_data = arena.alloc_data(&[ParticleVertexData(
+            mat_perspective * mat_flip * mat_view,
+            Mat4::from_rotation_translation(Quat::from_rotation_arc(Vec3::new(0.0, 0.0, -1.0), self.camera_front), Vec3::ZERO),
+            self.particles.device(),
+            self.particle_groups.device(),
         )])?;
 
         let mut command_buffer = self.queue.create_buffer()?;
@@ -511,6 +625,40 @@ impl<'a> Application<'a> {
         command_buffer.draw_indexed(
             vertex_data.device(), pixel_data.device(),
             indices.device(), indices.len() as u32, gpu::IndexType::U32);
+        command_buffer.end_render_pass();
+
+        self.update_particles(&mut command_buffer, arena, dt)?;
+
+        let color_target = gpu::Target {
+            view: self.textures.post_color.view()?,
+            load_op: gpu::Load::Load,
+            store_op: gpu::Store::Store,
+            clear_value: gpu::ClearValue::Color([0.0, 0.0, 0.0, 1.0]),
+        };
+        let depth_target = gpu::Target {
+            view: self.textures.depth_buffer.view()?,
+            load_op: gpu::Load::Load,
+            store_op: gpu::Store::Store,
+            clear_value: gpu::ClearValue::DepthStencil(0.0, 0),
+        };
+        let render_pass_desc = gpu::RenderPassDesc {
+            cull: gpu::Cull::None,
+            depth_test_state: Some(&depth_test_desc),
+            color_targets: &[color_target],
+            depth_target: Some(&depth_target),
+            ..Default::default()
+        };
+        command_buffer.begin_render_pass(&render_pass_desc);
+        command_buffer.bind_shaders([&self.shaders.vertex_particle, &self.shaders.pixel_particle]);
+        command_buffer.set_descriptor_heap(
+            Some(&self.tex_descriptors),
+            None,
+            Some(&self.sampler_descriptors),
+            Some(&self.accel_struct_descriptors),
+        );
+        command_buffer.draw_instanced(
+            particle_vertex_data.device(), gpu::DevicePointer::null(),
+            self.particles.len() as u32 * 6, 1, 0, 0);
         command_buffer.end_render_pass();
 
         #[repr(C)]

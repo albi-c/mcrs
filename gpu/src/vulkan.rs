@@ -606,7 +606,8 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         .shader_int16(true);
 
     let mut info_11 = vk::PhysicalDeviceVulkan11Features::builder()
-        .storage_buffer_16bit_access(true);
+        .storage_buffer_16bit_access(true)
+        .storage_input_output16(true);
 
     let mut info_12 = vk::PhysicalDeviceVulkan12Features::builder()
         .runtime_descriptor_array(true)

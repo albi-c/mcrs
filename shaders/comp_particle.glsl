@@ -22,6 +22,9 @@ struct ParticleGroup {
     float16_t y;
     float16_t z;
     uint16_t tex;
+    float16_t scale_x;
+    float16_t scale_y;
+    uint _padding;
 };
 
 layout(std430, buffer_reference, buffer_reference_align = 8) restrict buffer CompDataParticles {
@@ -45,12 +48,14 @@ layout(std430, push_constant) uniform Data {
 
 vec4 readPacked(uint packed) {
     vec4 color = vec4(
-        float(packed & 0xff),
-        float((packed >> 8) & 0xff),
-        float((packed >> 16) & 0xff),
-        float(packed >> 24)
+        (vec3(
+            float(packed & 0xff),
+            float((packed >> 8) & 0xff),
+            float((packed >> 16) & 0xff)
+        ) / 255.0 - 0.5) * 2.0,
+        float(packed >> 24) / 255.0
     );
-    return color / 255.0;
+    return color;
 }
 
 void main() {
@@ -58,14 +63,13 @@ void main() {
     uint idx = gl_GlobalInvocationID.x;
     Particle p = d.particles.data[idx];
     vec4 velSpeed = readPacked(p.velSpeed);
-    vec3 vel = velSpeed.xyz * velSpeed.w * 16.0;
-    vec3 pos = vec3(float(p.x), float(p.y), float(p.z));
-    pos += vel * d.dt;
+    vec3 vel = normalize(velSpeed.xyz) * velSpeed.w * 16.0;
     float lt = p.lifetime + d.dt;
     if (lt > d.maxLifetime) {
         lt = 0.0;
-        ParticleGroup g = d.groups.data[p.group];
-        pos = vec3(float(g.x), float(g.y), float(g.z));
     }
-//    d.particles.data[idx] = Particle(float16_t(pos.x), float16_t(pos.y), float16_t(pos.z), p.group, lt, p.velSpeed);
+    ParticleGroup g = d.groups.data[p.group];
+    vec3 pos = vec3(float(g.x), float(g.y), float(g.z));
+    pos += vel.xyz * lt;
+    d.particles.data[idx] = Particle(float16_t(pos.x), float16_t(pos.y), float16_t(pos.z), p.group, lt, p.velSpeed);
 }

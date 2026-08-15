@@ -7,3 +7,5 @@ glslc -fshader-stage=fragment shaders/frag_post.glsl -o shaders/frag_post.spv
 glslc -fshader-stage=compute shaders/comp_post.glsl -o shaders/comp_post.spv
 
 glslc -fshader-stage=compute shaders/comp_particle.glsl -o shaders/comp_particle.spv
+glslc -fshader-stage=vertex shaders/vert_particle.glsl -o shaders/vert_particle.spv
+glslc -fshader-stage=fragment shaders/frag_particle.glsl -o shaders/frag_particle.spv

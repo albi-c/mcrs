@@ -543,6 +543,12 @@ pub trait MemoryAllocator {
         alloc.host_mut().copy_from_slice(data);
         Ok(alloc)
     }
+
+    fn alloc_with_data<T: Pod>(&self, n: usize, mut get_value: impl FnMut(usize) -> T) -> Result<Self::Allocation<T>> {
+        let mut alloc = self.alloc(n)?;
+        alloc.host_mut().into_iter().enumerate().for_each(|(i, v)| *v = get_value(i));
+        Ok(alloc)
+    }
 }
 
 #[derive(Debug)]
@@ -778,6 +784,12 @@ pub struct Queue<'a> {
 impl<'a> Queue<'a> {
     pub fn create_buffer(&self) -> Result<CommandBuffer<'_>> {
         self.create_buffer_gpu(self.gpu.unwrap())
+    }
+
+    pub fn with_buffer(&self, func: impl FnOnce(&mut CommandBuffer<'_>) -> Result<()>) -> Result<SubmitWait<'_>> {
+        let mut cmd_buf = self.create_buffer()?;
+        func(&mut cmd_buf)?;
+        self.submit_no_signal(cmd_buf)
     }
 
     fn create_buffer_gpu(&self, gpu: &'a Gpu) -> Result<CommandBuffer<'_>> {
@@ -1065,6 +1077,20 @@ impl<'a> CommandBuffer<'a> {
     }
     pub fn wait_before(&mut self, after: Stage, ptr: DevicePointer, value: u64, op: Op, hazards: HazardFlags) {
         self.wait_before_masked(after, ptr, value, op, hazards, u64::MAX)
+    }
+
+    pub fn barrier_compute_to_vertex_shader(&mut self) {
+        let memory_barriers = [
+            vk::MemoryBarrier2::builder()
+                .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+                .dst_access_mask(vk::AccessFlags2::MEMORY_READ)
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_stage_mask(vk::PipelineStageFlags2::VERTEX_SHADER)
+                .build()
+        ];
+        let info = vk::DependencyInfo::builder()
+            .memory_barriers(&memory_barriers);
+        unsafe { self.gpu.device.cmd_pipeline_barrier2(self.buffer, &info) };
     }
 
     pub fn barrier_acceleration_structure(&mut self) {
