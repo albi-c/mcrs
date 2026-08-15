@@ -38,6 +38,7 @@ const EXTENSION_REQUIREMENTS: &[vk::ExtensionName] = &[
     vk::KHR_DEFERRED_HOST_OPERATIONS_EXTENSION.name,
     vk::KHR_RAY_QUERY_EXTENSION.name,
     vk::KHR_ACCELERATION_STRUCTURE_EXTENSION.name,
+    vk::KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION.name,
     #[cfg(feature = "device-fault")]
     vk::EXT_DEVICE_FAULT_EXTENSION.name,
 ];
@@ -636,6 +637,9 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
     let mut info_acceleration_structure = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::builder()
         .acceleration_structure(true);
 
+    let mut info_unified_image_layouts = vk::PhysicalDeviceUnifiedImageLayoutsFeaturesKHR::builder()
+        .unified_image_layouts(true);
+
     let mut info_device_fault = vk::PhysicalDeviceFaultFeaturesEXT::builder()
         .device_fault(true);
 
@@ -651,7 +655,8 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         .push_next(&mut info_descriptor_buffer)
         .push_next(&mut info_mesh_shader)
         .push_next(&mut info_ray_query)
-        .push_next(&mut info_acceleration_structure);
+        .push_next(&mut info_acceleration_structure)
+        .push_next(&mut info_unified_image_layouts);
     let info = if cfg!(feature = "device-fault") {
         info.push_next(&mut info_device_fault)
     } else {

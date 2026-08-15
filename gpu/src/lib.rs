@@ -18,7 +18,7 @@ use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use smart_default::SmartDefault;
 use vulkanalia::{vk, Device, Instance, Version};
-use vulkanalia::vk::{DeviceV1_0, ExtDescriptorBufferExtensionDeviceCommands, ExtDeviceFaultExtensionDeviceCommands, ExtMeshShaderExtensionDeviceCommands, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrBufferDeviceAddressExtensionDeviceCommands, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrSynchronization2ExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
+use vulkanalia::vk::{DeviceV1_0, DeviceV1_3, ExtDescriptorBufferExtensionDeviceCommands, ExtDeviceFaultExtensionDeviceCommands, ExtMeshShaderExtensionDeviceCommands, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrBufferDeviceAddressExtensionDeviceCommands, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrSynchronization2ExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
 use vulkanalia_vma as vma;
 use vulkanalia_vma::Alloc;
 use crate::vulkan::{create_logical_device, create_semaphore, create_shader, create_swapchain, find_suitable_device, get_cull_mode, get_front_face, get_sample_count_flag, AccelerationStructureInfo, CommandBufferPool, DescriptorSizes, PipelineLayout, PooledCommandBuffer, QueueFamilies, Queues, Swapchain};
@@ -285,19 +285,6 @@ pub enum TextureWrap {
     ClampToEdge = vk::SamplerAddressMode::CLAMP_TO_EDGE.as_raw(),
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-#[repr(i32)]
-pub enum TextureLayout {
-    Undefined = vk::ImageLayout::UNDEFINED.as_raw(),
-    General = vk::ImageLayout::GENERAL.as_raw(),
-    ColorAttachmentOptimal = vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL.as_raw(),
-    DepthStencilAttachmentOptimal = vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL.as_raw(),
-    DepthStencilReadOnlyOptimal = vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL.as_raw(),
-    ShaderReadOnlyOptimal = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL.as_raw(),
-    TransferSrcOptimal = vk::ImageLayout::TRANSFER_SRC_OPTIMAL.as_raw(),
-    TransferDstOptimal = vk::ImageLayout::TRANSFER_DST_OPTIMAL.as_raw(),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
 pub struct Stencil {
     #[default(Op::Always)]
@@ -465,8 +452,6 @@ pub struct TextureDesc {
     pub format: Format,
     #[default(TextureUsageFlags::None)]
     pub usage: TextureUsageFlags,
-    #[default(TextureLayout::General)]
-    pub layout: TextureLayout,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, SmartDefault)]
@@ -1082,6 +1067,20 @@ impl<'a> CommandBuffer<'a> {
         self.wait_before_masked(after, ptr, value, op, hazards, u64::MAX)
     }
 
+    pub fn barrier_acceleration_structure(&mut self) {
+        let memory_barriers = [
+            vk::MemoryBarrier2::builder()
+                .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
+                .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR)
+                .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+                .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+                .build()
+        ];
+        let info = vk::DependencyInfo::builder()
+            .memory_barriers(&memory_barriers);
+        unsafe { self.gpu.device.cmd_pipeline_barrier2(self.buffer, &info) };
+    }
+
     pub fn bind_shaders<const N: usize>(&mut self, shaders: [&Shader<'_>; N]) {
         self.unbind_shaders_raw(&[vk::ShaderStageFlags::VERTEX, vk::ShaderStageFlags::MESH_EXT]);
 
@@ -1176,26 +1175,10 @@ impl<'a> CommandBuffer<'a> {
         );
     }
 
-    pub fn texture_barrier(&mut self, texture: &Texture<'_>,
-                           old_layout: TextureLayout, new_layout: TextureLayout,
-                           src_stage: Stage, dst_stage: Stage,
-                           src_access: Access, dst_access: Access) {
-        self.image_barrier_raw(
-            vk::ImageLayout::from_raw(old_layout as i32),
-            vk::ImageLayout::from_raw(new_layout as i32),
-            texture.image,
-            vk::PipelineStageFlags::from_bits(src_stage.bits()).unwrap(),
-            vk::PipelineStageFlags::from_bits(dst_stage.bits()).unwrap(),
-            vk::AccessFlags::from_bits(src_access.bits()).unwrap(),
-            vk::AccessFlags::from_bits(dst_access.bits()).unwrap(),
-            texture.aspect,
-        )
-    }
-
     fn create_attachment(attachment: &Target<'_>) -> vk::RenderingAttachmentInfoBuilder<'static> {
         vk::RenderingAttachmentInfo::builder()
             .image_view(attachment.view.view)
-            .image_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
+            .image_layout(vk::ImageLayout::GENERAL)
             .load_op(vk::AttachmentLoadOp::from_raw(attachment.load_op as i32))
             .store_op(vk::AttachmentStoreOp::from_raw(attachment.store_op as i32))
             .clear_value(attachment.clear_value.to_vulkan())
@@ -1658,7 +1641,7 @@ impl Gpu {
             .image(image)
             .subresource_range(subresource_range)
             .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::from_raw(desc.layout as i32))
+            .new_layout(vk::ImageLayout::GENERAL)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
@@ -1779,7 +1762,7 @@ impl Gpu {
         }
 
         cmd_buf.image_barrier(
-            vk::ImageLayout::UNDEFINED, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL,
             swapchain.images[next_image_index],
             vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             true
@@ -1806,7 +1789,7 @@ impl Gpu {
         let mut cmd_buf = graphics_queue.create_buffer()?;
 
         cmd_buf.image_barrier(
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR,
+            vk::ImageLayout::GENERAL, vk::ImageLayout::PRESENT_SRC_KHR,
             swapchain.images[image_index],
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::BOTTOM_OF_PIPE,
             false

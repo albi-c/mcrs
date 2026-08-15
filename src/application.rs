@@ -195,7 +195,8 @@ pub struct Application<'a> {
     camera_look: Vec2,
 }
 
-fn create_bottom_level_as<'a>(gpu: &'a gpu::Gpu, queue: &gpu::Queue<'a>, scene: &gltf::Scene<'a>) -> Result<gpu::rt::BottomLevelAS<'a>> {
+fn create_bottom_level_as<'a>(gpu: &'a gpu::Gpu, queue: &gpu::Queue<'a>, scene: &gltf::Scene<'a>,
+                              scale: Vec3) -> Result<gpu::rt::BottomLevelAS<'a>> {
     let allocator = gpu.allocator_mem(gpu::Memory::AccelerationStructureInput);
     let mut bl_as = gpu::rt::BottomLevelAS::builder();
     let mut vertices = allocator.alloc(scene.vertices.len())?;
@@ -204,9 +205,9 @@ fn create_bottom_level_as<'a>(gpu: &'a gpu::Gpu, queue: &gpu::Queue<'a>, scene: 
     }
     let indices = allocator.alloc_data(scene.indices.host())?;
     let transform_data = [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
+        [scale.x, 0.0, 0.0, 0.0],
+        [0.0, scale.y, 0.0, 0.0],
+        [0.0, 0.0, scale.z, 0.0],
     ];
 
     let mut cmd_buf = queue.create_buffer()?;
@@ -265,7 +266,8 @@ impl<'a> Application<'a> {
         //     gpu, "models/Sponza_gltf/glTF/Sponza.gltf",
         //     &mut tex_descriptors, 1)?;
 
-        let bl_as = create_bottom_level_as(gpu, &queue, &gltf.scenes[0])?;
+        let bl_as = create_bottom_level_as(
+            gpu, &queue, &gltf.scenes[0], Vec3::new(1.0, -1.0, 1.0))?;
         let tl_as = create_top_level_as(gpu, &queue, &bl_as)?;
         tl_as.descriptor(&mut accel_struct_descriptors[0]);
 
@@ -348,14 +350,13 @@ impl<'a> Application<'a> {
 
     fn create_tex<'b>(gpu: &'b gpu::Gpu, ctx: &dyn gpu::SwapchainContext,
                       cmd_buf: &mut gpu::CommandBuffer<'_>, format: gpu::Format,
-                      usage: gpu::TextureUsageFlags, layout: gpu::TextureLayout) -> Result<gpu::Texture<'b>> {
+                      usage: gpu::TextureUsageFlags) -> Result<gpu::Texture<'b>> {
         let dims = ctx.get_window_size();
         gpu.create_texture(gpu::TextureDesc {
             ty: gpu::TextureType::Tex2D,
             dimensions: (dims.0, dims.1, 1),
             format,
             usage,
-            layout,
             ..Default::default()
         }, cmd_buf)
     }
@@ -365,12 +366,11 @@ impl<'a> Application<'a> {
         Ok(WindowSizedTextures {
             depth_buffer: Self::create_tex(
                 gpu, ctx, cmd_buf, gpu::Format::Depth32Float,
-                gpu::TextureUsageFlags::DepthStencilAttachment, gpu::TextureLayout::DepthStencilAttachmentOptimal,
+                gpu::TextureUsageFlags::DepthStencilAttachment,
             )?,
             post_color: Self::create_tex(
                 gpu, ctx, cmd_buf, gpu::Format::RGBA8UNorm,
                 gpu::TextureUsageFlags::Sampled | gpu::TextureUsageFlags::ColorAttachment,
-                gpu::TextureLayout::General,
             )?,
         })
     }
@@ -411,8 +411,11 @@ impl<'a> Application<'a> {
             vel -= up;
         }
 
-        vel *= 2.5;
-        self.camera_pos += dt * vel;
+        self.camera_pos += dt * vel * if self.get_key(KeyCode::ControlLeft) {
+            10.0
+        } else {
+            2.5
+        };
     }
 
     fn get_view_matrix(&self) -> Mat4 {
