@@ -345,7 +345,7 @@ impl<'a> Application<'a> {
             ParticleGroup {
                 spawn_pos: [
                     f16::from_f32(pos.x),
-                    f16::from_f32(pos.y),
+                    f16::from_f32(pos.y - 0.3),
                     f16::from_f32(pos.z),
                 ],
                 tex: 1,
@@ -356,7 +356,7 @@ impl<'a> Application<'a> {
                 _padding: 0,
             }
         })?;
-        const PARTICLES_PER_LIGHT: usize = 1024;
+        const PARTICLES_PER_LIGHT: usize = 128;
         const PARTICLE_SPEED: f32 = 0.02;
         let mut particles = gpu.allocator().alloc(LIGHTS.len() * PARTICLES_PER_LIGHT)?;
         fn pcg_hash(input: u32) -> u32 {

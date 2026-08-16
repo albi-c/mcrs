@@ -64,6 +64,11 @@ void main() {
     Particle p = d.particles.data[idx];
     vec4 velSpeed = readPacked(p.velSpeed);
     vec3 vel = normalize(velSpeed.xyz) * velSpeed.w * 16.0;
+
+    // TODO: move to particle group parameters
+    vel.y = abs(vel.y);
+    vel *= vec3(0.5, 1.0, 0.5);
+
     float lt = p.lifetime + d.dt;
     if (lt > d.maxLifetime) {
         lt = 0.0;

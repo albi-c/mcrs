@@ -52,15 +52,15 @@ vec3 getLight(in vec3 normal, in vec3 viewDir, float specExp, float metallic, fl
     float lightDist = length(lightDiff);
     vec3 lightDir = lightDiff / lightDist;
 
-    rayQueryEXT query;
-    rayQueryInitializeEXT(
-        query, accelerationStructures[0], gl_RayFlagsTerminateOnFirstHitEXT, 0xff, inWorldPos, 0.01,
-        lightDir, lightDist
-    );
-    rayQueryProceedEXT(query);
-    if (rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
-        return vec3(0.0);
-    }
+//    rayQueryEXT query;
+//    rayQueryInitializeEXT(
+//        query, accelerationStructures[0], gl_RayFlagsTerminateOnFirstHitEXT, 0xff, inWorldPos, 0.01,
+//        lightDir, lightDist
+//    );
+//    rayQueryProceedEXT(query);
+//    if (rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+//        return vec3(0.0);
+//    }
 
     float intDiff = max(0.0, dot(normal, lightDir));
     vec3 halfDir = normalize(lightDir + viewDir);
