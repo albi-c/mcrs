@@ -524,7 +524,7 @@ impl<'a> Application<'a> {
 
         cmd_buf.bind_compute_shader(&self.shaders.compute_particle);
         cmd_buf.dispatch(compute_data.device(), (self.particles.len() as u32 / 128, 1, 1));
-        cmd_buf.barrier_compute_to_vertex_shader();
+        // barrier is done right before particle draw
 
         Ok(())
     }
@@ -591,6 +591,8 @@ impl<'a> Application<'a> {
         let mut swapchain_target = self.gpu.next_swapchain_image(ctx, &mut command_buffer)?;
         swapchain_target.clear_value = gpu::ClearValue::Color([0.08, 0.0, 0.0, 1.0]);
 
+        self.update_particles(&mut command_buffer, arena, dt)?;
+
         let color_target = gpu::Target {
             view: self.textures.post_color.view()?,
             load_op: gpu::Load::Clear,
@@ -627,7 +629,7 @@ impl<'a> Application<'a> {
             indices.device(), indices.len() as u32, gpu::IndexType::U32);
         command_buffer.end_render_pass();
 
-        self.update_particles(&mut command_buffer, arena, dt)?;
+        command_buffer.barrier(gpu::Stage::Compute, gpu::Stage::VertexShader, gpu::HazardFlags::empty());
 
         let color_target = gpu::Target {
             view: self.textures.post_color.view()?,

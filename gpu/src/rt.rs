@@ -4,7 +4,7 @@ use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 use vulkanalia::vk;
 use vulkanalia::vk::{DeviceV1_3, ExtDescriptorBufferExtensionDeviceCommands, Handle, HasBuilder, KhrAccelerationStructureExtensionDeviceCommands};
-use crate::{Allocation, CommandBuffer, DevicePointer, Gpu, HasIndexType, Memory, MemoryAllocation, MemoryAllocator};
+use crate::{Allocation, CommandBuffer, DevicePointer, Gpu, HasIndexType, HazardFlags, Memory, MemoryAllocation, MemoryAllocator, Stage};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 #[repr(i32)]
@@ -177,7 +177,9 @@ impl<'a> TopLevelASBuilder<'a> {
     }
 
     pub fn build<'b>(self, gpu: &'a Gpu, cmd_buf: &mut CommandBuffer<'b>) -> Result<TopLevelAS<'a>> where 'a: 'b {
-        cmd_buf.barrier_acceleration_structure();
+        cmd_buf.barrier(
+            Stage::AccelerationStructureBuild, Stage::AccelerationStructureBuild,
+            HazardFlags::AccelerationStructure);
 
         let instance_buffer = gpu
             .allocator_mem(Memory::AccelerationStructureInput)

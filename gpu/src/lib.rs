@@ -14,7 +14,7 @@ use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::{Bound, Index, IndexMut};
 use anyhow::Result;
-use bitflags::bitflags;
+use bitflags::{bitflags, Flags};
 use bytemuck::{Pod, Zeroable};
 use smart_default::SmartDefault;
 use vulkanalia::{vk, Device, Instance, Version};
@@ -176,16 +176,22 @@ bitflags! {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct Stage(u32);
+pub struct Stage(u64);
 bitflags! {
-    impl Stage : u32 {
-        const Top = vk::PipelineStageFlags::TOP_OF_PIPE.bits();
-        const Transfer = vk::PipelineStageFlags::TRANSFER.bits();
-        const Compute = vk::PipelineStageFlags::COMPUTE_SHADER.bits();
-        const RasterColorOut = vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT.bits();
-        const VertexShader = vk::PipelineStageFlags::VERTEX_SHADER.bits();
-        const PixelShader = vk::PipelineStageFlags::FRAGMENT_SHADER.bits();
-        const Bottom = vk::PipelineStageFlags::BOTTOM_OF_PIPE.bits();
+    impl Stage : u64 {
+        const Top = vk::PipelineStageFlags2::TOP_OF_PIPE.bits();
+        const AllTransfer = vk::PipelineStageFlags2::ALL_TRANSFER.bits();
+        const Compute = vk::PipelineStageFlags2::COMPUTE_SHADER.bits();
+        const DrawIndirect = vk::PipelineStageFlags2::DRAW_INDIRECT.bits();
+        const RasterColorOut = vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT.bits();
+        const VertexShader = vk::PipelineStageFlags2::VERTEX_SHADER.bits();
+        const TaskShader = vk::PipelineStageFlags2::TASK_SHADER_EXT.bits();
+        const MeshShader = vk::PipelineStageFlags2::MESH_SHADER_EXT.bits();
+        const PixelShader = vk::PipelineStageFlags2::FRAGMENT_SHADER.bits();
+        const Bottom = vk::PipelineStageFlags2::BOTTOM_OF_PIPE.bits();
+        const AllGraphics = vk::PipelineStageFlags2::ALL_GRAPHICS.bits();
+        const AllCommands = vk::PipelineStageFlags2::ALL_COMMANDS.bits();
+        const AccelerationStructureBuild = vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR.bits();
     }
 }
 
@@ -204,10 +210,10 @@ bitflags! {
 pub struct HazardFlags(u32);
 bitflags! {
     impl HazardFlags : u32 {
-        const None = 0x0;
-        const DrawArguments = 0x1;
+        const IndirectDrawArguments = 0x1;
         const Descriptors = 0x2;
         const DepthStencil = 0x4;
+        const AccelerationStructure = 0x8;
     }
 }
 
@@ -910,7 +916,7 @@ pub struct CommandBuffer<'a> {
 impl<'a> Drop for CommandBuffer<'a> {
     fn drop(&mut self) {
         if self.item.is_some() {
-            log::error!("Command buffer dropped before submission");
+            log::error!("Command buffer dropped before submission, possibly function returned when handling Err result");
             println!("{}", std::backtrace::Backtrace::capture());
         }
     }
@@ -1065,46 +1071,57 @@ impl<'a> CommandBuffer<'a> {
         }
     }
 
-    pub fn barrier(&mut self, before: Stage, after: Stage, hazards: HazardFlags) {
+    pub fn barrier(&mut self, stage_before: Stage, stage_after: Stage, hazards: HazardFlags) {
+        let (src_access, dst_access) = if hazards.is_empty() {
+            (
+                vk::AccessFlags2::MEMORY_WRITE,
+                vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE
+            )
+        } else {
+            let mut src_access = vk::AccessFlags2::empty();
+            let mut dst_access = vk::AccessFlags2::empty();
+            if hazards.contains(HazardFlags::IndirectDrawArguments) {
+                src_access |= vk::AccessFlags2::SHADER_WRITE;
+                dst_access |= vk::AccessFlags2::INDIRECT_COMMAND_READ;
+            }
+            if hazards.contains(HazardFlags::Descriptors) {
+                src_access |= vk::AccessFlags2::SHADER_WRITE;
+                dst_access |= vk::AccessFlags2::SHADER_READ;
+            }
+            if hazards.contains(HazardFlags::DepthStencil) {
+                src_access |= vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE;
+                dst_access |= vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
+                    | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE;
+            }
+            if hazards.contains(HazardFlags::AccelerationStructure) {
+                src_access |= vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR;
+                dst_access |= vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR
+                    | vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR;
+            }
+            (src_access, dst_access)
+        };
+
+        let memory_barriers = [
+            vk::MemoryBarrier2::builder()
+                .src_access_mask(src_access)
+                .dst_access_mask(dst_access)
+                .src_stage_mask(vk::PipelineStageFlags2::from_bits(stage_before.bits()).unwrap())
+                .dst_stage_mask(vk::PipelineStageFlags2::from_bits(stage_after.bits()).unwrap())
+                .build()
+        ];
+        let info = vk::DependencyInfo::builder()
+            .memory_barriers(&memory_barriers);
+        unsafe { self.gpu.device.cmd_pipeline_barrier2(self.buffer, &info) };
+    }
+    pub fn signal_after(&mut self, stage_before: Stage, ptr: DevicePointer, value: u64, signal: Signal) {
         todo!()
     }
-    pub fn signal_after(&mut self, before: Stage, ptr: DevicePointer, value: u64, signal: Signal) {
-        todo!()
-    }
-    pub fn wait_before_masked(&mut self, after: Stage, ptr: DevicePointer, value: u64,
+    pub fn wait_before_masked(&mut self, stage_after: Stage, ptr: DevicePointer, value: u64,
                               op: Op, hazards: HazardFlags, mask: u64) {
         todo!()
     }
-    pub fn wait_before(&mut self, after: Stage, ptr: DevicePointer, value: u64, op: Op, hazards: HazardFlags) {
-        self.wait_before_masked(after, ptr, value, op, hazards, u64::MAX)
-    }
-
-    pub fn barrier_compute_to_vertex_shader(&mut self) {
-        let memory_barriers = [
-            vk::MemoryBarrier2::builder()
-                .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-                .dst_access_mask(vk::AccessFlags2::MEMORY_READ)
-                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                .dst_stage_mask(vk::PipelineStageFlags2::VERTEX_SHADER)
-                .build()
-        ];
-        let info = vk::DependencyInfo::builder()
-            .memory_barriers(&memory_barriers);
-        unsafe { self.gpu.device.cmd_pipeline_barrier2(self.buffer, &info) };
-    }
-
-    pub fn barrier_acceleration_structure(&mut self) {
-        let memory_barriers = [
-            vk::MemoryBarrier2::builder()
-                .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
-                .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR)
-                .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
-                .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
-                .build()
-        ];
-        let info = vk::DependencyInfo::builder()
-            .memory_barriers(&memory_barriers);
-        unsafe { self.gpu.device.cmd_pipeline_barrier2(self.buffer, &info) };
+    pub fn wait_before(&mut self, stage_after: Stage, ptr: DevicePointer, value: u64, op: Op, hazards: HazardFlags) {
+        self.wait_before_masked(stage_after, ptr, value, op, hazards, u64::MAX)
     }
 
     pub fn bind_shaders<const N: usize>(&mut self, shaders: [&Shader<'_>; N]) {
