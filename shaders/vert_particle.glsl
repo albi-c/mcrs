@@ -36,7 +36,8 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Ver
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer VertData {
     mat4 mvp;
-    mat4 rotation;
+    vec4 camera_right;
+    vec4 camera_up;
     VertDataParticles particles;
     VertDataParticleGroups groups;
 };
@@ -129,6 +130,8 @@ void main() {
     // TODO: add lifetime to group - particles get smaller over time
     vec2 scale = vec2(float(group.scale_x), float(group.scale_y)) * variabilityModifierPos(scaleVar, hashed.x); // * (particle.lifetime / group.lifetime);
     outUv = OFFSETS[j] + 0.5;
-    vec3 pos = worldPos + (d.rotation * vec4(pointOffset * scale, 0.0, 0.0)).xyz;
+    // first is spherical (broken when looking from the top), second is cylindrical
+//    vec3 pos = worldPos + vec3(-1.0, 1.0, 1.0) * d.camera_right.xyz * pointOffset.x * scale.x + d.camera_up.xyz * pointOffset.y * scale.y;
+    vec3 pos = worldPos + vec3(-1.0, 1.0, 1.0) * d.camera_right.xyz * pointOffset.x * scale.x + vec3(0.0, pointOffset.y * scale.y, 0.0);
     gl_Position = d.mvp * vec4(pos, 1.0);
 }

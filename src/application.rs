@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::Instant;
 use anyhow::{anyhow, Result};
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Quat, Vec2, Vec3, Vec3A, Vec4};
+use glam::{Mat4, Quat, Vec2, Vec3, Vec3A, Vec4, Vec4Swizzles};
 use half::f16;
 use image::{EncodableLayout, ImageReader};
 use winit::event::ElementState;
@@ -415,10 +415,10 @@ impl<'a> Application<'a> {
                 ],
                 rot_speed: f16::from_f32(PARTICLE_ROT_SPEED),
                 rot_speed_variability: 255,
-                scale_variability: 255,
+                scale_variability: 128,
             }
         })?;
-        const PARTICLES_PER_LIGHT: usize = 128;
+        const PARTICLES_PER_LIGHT: usize = 64;
         const PARTICLE_SPEED: f32 = 0.02;
         let mut particles = gpu.allocator().alloc(LIGHTS.len() * PARTICLES_PER_LIGHT)?;
         fn pcg_hash(input: u32) -> u32 {
@@ -635,10 +635,11 @@ impl<'a> Application<'a> {
 
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-        struct ParticleVertexData(Mat4, Mat4, gpu::DevicePointer, gpu::DevicePointer);
+        struct ParticleVertexData(Mat4, Vec3A, Vec3A, gpu::DevicePointer, gpu::DevicePointer);
         let particle_vertex_data = arena.alloc_data(&[ParticleVertexData(
             mat_perspective * mat_flip * mat_view,
-            Mat4::from_rotation_translation(Quat::from_rotation_arc(Vec3::new(0.0, 0.0, -1.0), self.camera_front), Vec3::ZERO),
+            mat_view.col(0).xyz().to_vec3a(),
+            mat_view.col(1).xyz().to_vec3a(),
             self.particles.device(),
             self.particle_groups.device(),
         )])?;
