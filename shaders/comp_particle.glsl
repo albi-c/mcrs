@@ -24,7 +24,9 @@ struct ParticleGroup {
     uint16_t tex;
     float16_t scale_x;
     float16_t scale_y;
-    uint _padding;
+    float16_t rot_speed;
+    // 0..8 rotation speed variability (/256), 8..16 scale variability (/256)
+    uint16_t rot_speed_scale_var;
 };
 
 layout(std430, buffer_reference, buffer_reference_align = 8) restrict buffer CompDataParticles {
@@ -58,6 +60,20 @@ vec4 readPacked(uint packed) {
     return color;
 }
 
+uvec2 murmurHash21(uint src) {
+    const uint M = 0x5bd1e995u;
+    uvec2 h = uvec2(1190494759u, 2147483647u);
+    src *= M; src ^= src>>24u; src *= M;
+    h *= M; h ^= src;
+    h ^= h>>13u; h *= M; h ^= h>>15u;
+    return h;
+}
+
+vec2 hash21(uint src) {
+    uvec2 h = murmurHash21(src);
+    return uintBitsToFloat(h & 0x007fffffu | 0x3f800000u) - 1.0;
+}
+
 void main() {
     CompData d = data.comp;
     uint idx = gl_GlobalInvocationID.x;
@@ -65,16 +81,17 @@ void main() {
     vec4 velSpeed = readPacked(p.velSpeed);
     vec3 vel = normalize(velSpeed.xyz) * velSpeed.w * 16.0;
 
-    // TODO: move to particle group parameters
+    // TODO: move to particle generation
     vel.y = abs(vel.y);
-    vel *= vec3(0.5, 1.0, 0.5);
+    vel *= vec3(0.3, 1.5, 0.3);
 
     float lt = p.lifetime + d.dt;
     if (lt > d.maxLifetime) {
         lt = 0.0;
     }
     ParticleGroup g = d.groups.data[p.group];
-    vec3 pos = vec3(float(g.x), float(g.y), float(g.z));
-    pos += vel.xyz * lt;
+    vec2 offset = (hash21(idx) - 0.5) * 0.25;
+    vec3 pos = vec3(float(g.x), float(g.y), float(g.z)) + vec3(offset.x, 0.0, offset.y);
+    pos += vel.xyz * log(lt + 1.0);
     d.particles.data[idx] = Particle(float16_t(pos.x), float16_t(pos.y), float16_t(pos.z), p.group, lt, p.velSpeed);
 }

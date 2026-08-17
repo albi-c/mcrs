@@ -14,7 +14,7 @@ use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::{Bound, Index, IndexMut};
 use anyhow::Result;
-use bitflags::{bitflags, Flags};
+use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use smart_default::SmartDefault;
 use vulkanalia::{vk, Device, Instance, Version};

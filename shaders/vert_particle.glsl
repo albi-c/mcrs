@@ -21,7 +21,9 @@ struct ParticleGroup {
     uint16_t tex;
     float16_t scale_x;
     float16_t scale_y;
-    uint _padding;
+    float16_t rot_speed;
+    // 0..8 rotation speed variability (/256), 8..16 scale variability (/256)
+    uint16_t rot_speed_scale_var;
 };
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer VertDataParticles {
@@ -65,25 +67,68 @@ vec4 readPacked(uint packed) {
     return color;
 }
 
+uvec2 murmurHash21(uint src) {
+    const uint M = 0x5bd1e995u;
+    uvec2 h = uvec2(1190494759u, 2147483647u);
+    src *= M; src ^= src>>24u; src *= M;
+    h *= M; h ^= src;
+    h ^= h>>13u; h *= M; h ^= h>>15u;
+    return h;
+}
+
+vec2 hash21(uint src) {
+    uvec2 h = murmurHash21(src);
+    return uintBitsToFloat(h & 0x007fffffu | 0x3f800000u) - 1.0;
+}
+
+float variabilityModifier(float variability, float inp) {
+    // input between 0 and 1, output around -1 or 1
+    float halfVar = 0.5 * variability;
+    inp -= 0.5;
+    inp = inp / 0.5 * halfVar;
+    inp += sign(inp) - 0.5 * halfVar;
+    return inp;
+}
+
+float variabilityModifierPos(float variability, float inp) {
+    // input between 0 and 1, output around 1
+    inp *= variability;
+    inp += 1.0 - 0.5 * variability;
+    return inp;
+}
+
 void main() {
     // TODO: rotate particles towards camera, gravity
+
+    // TODO!!!: remove compute for particles, calculate everything in vertex shader - cur_lifetime = time % lifetime
 
     VertData d = data.vert;
 
     uint i = gl_VertexIndex / 6;
     uint j = gl_VertexIndex % 6;
 
+    vec2 hashed = hash21(i);
+
     Particle particle = d.particles.data[i];
     ParticleGroup group = d.groups.data[particle.group];
     outTex = group.tex;
+
+    float rotSpeedVar = float(group.rot_speed_scale_var & 0xff) / 256.0;
+    float scaleVar = float(group.rot_speed_scale_var >> 8) / 256.0;
+
+    float rotation = hashed.x + particle.lifetime * float(group.rot_speed) * variabilityModifier(rotSpeedVar, hashed.y);
+    vec2 basePointOffset = OFFSETS[j];
+    vec2 pointOffset = vec2(0.0);
+    pointOffset.x = basePointOffset.x * cos(rotation) + basePointOffset.y * sin(rotation);
+    pointOffset.y = - basePointOffset.x * sin(rotation) + basePointOffset.y * cos(rotation);
 
     vec4 velSpeed = readPacked(particle.velSpeed);
     vec3 vel = velSpeed.xyz;
 
     vec3 worldPos = vec3(float(particle.x), float(particle.y), float(particle.z));
-    vec2 scale = vec2(float(group.scale_x), float(group.scale_y));
-    vec2 offset = OFFSETS[j];
-    outUv = offset + 0.5;
-    vec3 pos = worldPos + (d.rotation * vec4(offset * scale, 0.0, 0.0)).xyz;
+    // TODO: add lifetime to group - particles get smaller over time
+    vec2 scale = vec2(float(group.scale_x), float(group.scale_y)) * variabilityModifierPos(scaleVar, hashed.x); // * (particle.lifetime / group.lifetime);
+    outUv = OFFSETS[j] + 0.5;
+    vec3 pos = worldPos + (d.rotation * vec4(pointOffset * scale, 0.0, 0.0)).xyz;
     gl_Position = d.mvp * vec4(pos, 1.0);
 }

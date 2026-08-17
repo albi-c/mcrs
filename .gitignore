@@ -4,3 +4,4 @@
 /models/pkg_a_curtains
 /models/*.cache
 /image_cache/*
+/shader_cache/*

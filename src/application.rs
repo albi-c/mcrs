@@ -4,7 +4,8 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::path::Path;
-use anyhow::Result;
+use std::time::Instant;
+use anyhow::{anyhow, Result};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Quat, Vec2, Vec3, Vec3A, Vec4};
 use half::f16;
@@ -76,7 +77,9 @@ struct ParticleGroup {
     pub spawn_pos: [f16; 3],
     pub tex: u16,
     pub scale: [f16; 2],
-    pub _padding: u32,
+    pub rot_speed: f16,
+    pub rot_speed_variability: u8,
+    pub scale_variability: u8,
 }
 
 impl Material {
@@ -103,14 +106,12 @@ fn hash(value: impl Hash) -> u64 {
     hasher.finish()
 }
 
-const USE_IMAGE_CACHE: bool = false;
 fn load_image(path: impl AsRef<Path>, gpu: &gpu::Gpu) -> Result<(u32, u32, gpu::Allocation<'_, u8>)> {
     let cache_path = format!(
         "image_cache/{:016x}_{}", hash(path.as_ref()),
         path.as_ref().file_name()
-            .expect("path has no file name").to_str()
-            .expect("unable to convert path to string"));
-    if USE_IMAGE_CACHE && fs::exists(&cache_path)? {
+            .expect("path has no file name").to_string_lossy());
+    if fs::exists(&cache_path)? {
         let mut file = fs::File::open(cache_path)?;
         let mut header = [0u32; 2];
         file.read_exact(bytemuck::cast_slice_mut(&mut header))?;
@@ -119,7 +120,7 @@ fn load_image(path: impl AsRef<Path>, gpu: &gpu::Gpu) -> Result<(u32, u32, gpu::
         let mut decoder = lz4::Decoder::new(file)?;
         let length = width as usize * height as usize * 4;
         let mut alloc = gpu.alloc::<u8>(length)?;
-        decoder.read_exact(bytemuck::cast_slice_mut(alloc.host_mut()))?;
+        decoder.read_exact(alloc.host_mut())?;
         Ok((width, height, alloc))
     } else {
         let img = ImageReader::open(path)?
@@ -133,6 +134,7 @@ fn load_image(path: impl AsRef<Path>, gpu: &gpu::Gpu) -> Result<(u32, u32, gpu::
         let length = width as usize * height as usize * 4;
         assert_eq!(img.as_bytes().len(), length, "image length mismatch");
         encoder.write_all(img.as_bytes())?;
+        encoder.flush()?;
         Ok((img.width(), img.height(), alloc))
     }
 }
@@ -173,6 +175,63 @@ fn load_gltf_cached<'a>(path: impl AsRef<Path>, cache_path: impl AsRef<Path>, gp
     }
 }
 
+fn compile_shader(glsl: &str, path: &str, stage: gpu::ShaderStage) -> Result<shaderc::CompilationArtifact> {
+    let shader_stage = match stage {
+        gpu::ShaderStage::Vertex => shaderc::ShaderKind::Vertex,
+        gpu::ShaderStage::Pixel => shaderc::ShaderKind::Fragment,
+        gpu::ShaderStage::Mesh => shaderc::ShaderKind::Mesh,
+        gpu::ShaderStage::Compute => shaderc::ShaderKind::Compute,
+    };
+    let compiler = shaderc::Compiler::new()?;
+    let mut options = shaderc::CompileOptions::new()?;
+    options.set_target_spirv(shaderc::SpirvVersion::V1_4);
+    options.set_optimization_level(shaderc::OptimizationLevel::Performance);
+    options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_3 as u32);
+    options.set_include_callback(|name, _, base, _| {
+        match Path::new(base).parent() {
+            Some(base) => {
+                let path = base.join(name);
+                Ok(shaderc::ResolvedInclude {
+                    resolved_name: path.to_string_lossy().to_string(),
+                    content: fs::read_to_string(path).map_err(|err| err.to_string())?,
+                })
+            },
+            None => Err("invalid parent shader path".to_owned()),
+        }
+    });
+    Ok(compiler.compile_into_spirv(glsl, shader_stage, path, "main", Some(&options))?)
+}
+
+fn load_shader(path: impl AsRef<Path>, stage: gpu::ShaderStage, gpu: &gpu::Gpu) -> Result<gpu::Shader<'_>> {
+    if !Path::new("shader_cache").exists() {
+        fs::create_dir("shader_cache")?;
+    }
+    let glsl = fs::read_to_string(&path)?;
+    let cache_path = format!(
+        "shader_cache/{:016x}_{}.spv",
+        hash(path.as_ref()),
+        path.as_ref().file_name().ok_or_else(|| anyhow!("shader path has no file name"))?.to_string_lossy());
+    let cache_path = Path::new(&cache_path);
+    if cache_path.exists() {
+        let mut file = fs::File::open(cache_path)?;
+        let mut hashed = [0u64];
+        file.read_exact(bytemuck::cast_slice_mut(&mut hashed))?;
+        if hashed[0] == hash(&glsl) {
+            let mut spirv = vec![];
+            file.read_to_end(&mut spirv)?;
+            assert_eq!(spirv.len() % 4, 0, "spir-v length not a multiple of 4");
+            return gpu.create_shader(&spirv, stage);
+        }
+    }
+    let result = compile_shader(&glsl, &path.as_ref().to_string_lossy(), stage)?;
+    {
+        let mut file = fs::File::create(cache_path)?;
+        file.write_all(bytemuck::cast_slice(&[hash(&glsl)]))?;
+        file.write_all(result.as_binary_u8())?;
+    }
+    gpu.create_shader(result.as_binary_u8(), stage)
+}
+
 struct WindowSizedTextures<'a> {
     pub depth_buffer: gpu::Texture<'a>,
     pub post_color: gpu::Texture<'a>,
@@ -184,7 +243,6 @@ struct Shaders<'a> {
 
     pub mesh_post: gpu::Shader<'a>,
     pub pixel_post: gpu::Shader<'a>,
-    pub compute_post: gpu::Shader<'a>,
 
     pub compute_particle: gpu::Shader<'a>,
     pub vertex_particle: gpu::Shader<'a>,
@@ -278,7 +336,7 @@ impl<'a> Application<'a> {
 
         let textures = Self::create_window_sized(gpu, ctx, &mut command_buffer)?;
 
-        let particle_texture = load_texture("textures/flame.png", gpu, &mut command_buffer)?;
+        let particle_texture = load_texture("textures/flame2.png", gpu, &mut command_buffer)?;
         let scale_x = particle_texture.dimensions().0 as f32 / particle_texture.dimensions().1 as f32;
 
         let mut tex_descriptors = gpu.alloc_texture_descriptor_heap()?;
@@ -340,6 +398,8 @@ impl<'a> Application<'a> {
         ];
         let lights = gpu.allocator().alloc_data(&LIGHTS)?;
 
+        const PARTICLE_SCALE: f32 = 3.0;
+        const PARTICLE_ROT_SPEED: f32 = 1.0;
         let particle_groups = gpu.allocator().alloc_with_data(LIGHTS.len(), |i| {
             let pos = LIGHTS[i].pos;
             ParticleGroup {
@@ -350,10 +410,12 @@ impl<'a> Application<'a> {
                 ],
                 tex: 1,
                 scale: [
-                    f16::from_f32(0.0625f32),
-                    f16::from_f32(0.0625f32 * scale_x),
+                    f16::from_f32(PARTICLE_SCALE * 0.0625f32),
+                    f16::from_f32(PARTICLE_SCALE * 0.0625f32 * scale_x),
                 ],
-                _padding: 0,
+                rot_speed: f16::from_f32(PARTICLE_ROT_SPEED),
+                rot_speed_variability: 255,
+                scale_variability: 255,
             }
         })?;
         const PARTICLES_PER_LIGHT: usize = 128;
@@ -375,28 +437,23 @@ impl<'a> Application<'a> {
             }
         }
 
+        let time = Instant::now();
+        let shaders = Shaders {
+            vertex: load_shader("shaders/vert.glsl", gpu::ShaderStage::Vertex, gpu)?,
+            pixel: load_shader("shaders/frag.glsl", gpu::ShaderStage::Pixel, gpu)?,
+
+            mesh_post: load_shader("shaders/mesh_post.glsl", gpu::ShaderStage::Mesh, gpu)?,
+            pixel_post: load_shader("shaders/frag_post.glsl", gpu::ShaderStage::Pixel, gpu)?,
+
+            compute_particle: load_shader("shaders/comp_particle.glsl", gpu::ShaderStage::Compute, gpu)?,
+            vertex_particle: load_shader("shaders/vert_particle.glsl", gpu::ShaderStage::Vertex, gpu)?,
+            pixel_particle: load_shader("shaders/frag_particle.glsl", gpu::ShaderStage::Pixel, gpu)?,
+        };
+        println!("Loaded shaders in {:.3} seconds", time.elapsed().as_secs_f32());
+
         Ok(Self {
             gpu,
-            shaders: Shaders {
-                vertex: gpu.create_shader(&fs::read("shaders/vert.spv")?,
-                                          gpu::ShaderStage::Vertex)?,
-                pixel: gpu.create_shader(&fs::read("shaders/frag.spv")?,
-                                         gpu::ShaderStage::Pixel)?,
-
-                mesh_post: gpu.create_shader(&fs::read("shaders/mesh_post.spv")?,
-                                             gpu::ShaderStage::Mesh)?,
-                pixel_post: gpu.create_shader(&fs::read("shaders/frag_post.spv")?,
-                                              gpu::ShaderStage::Pixel)?,
-                compute_post: gpu.create_shader(&fs::read("shaders/comp_post.spv")?,
-                                                gpu::ShaderStage::Compute)?,
-
-                compute_particle: gpu.create_shader(&fs::read("shaders/comp_particle.spv")?,
-                                                    gpu::ShaderStage::Compute)?,
-                vertex_particle: gpu.create_shader(&fs::read("shaders/vert_particle.spv")?,
-                                                   gpu::ShaderStage::Vertex)?,
-                pixel_particle: gpu.create_shader(&fs::read("shaders/frag_particle.spv")?,
-                                                  gpu::ShaderStage::Pixel)?,
-            },
+            shaders,
             queue,
             frame_semaphore: gpu.create_semaphore(0)?,
             frame_arenas: (0..FRAMES_IN_FLIGHT)

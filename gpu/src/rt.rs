@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 use vulkanalia::vk;
-use vulkanalia::vk::{DeviceV1_3, ExtDescriptorBufferExtensionDeviceCommands, Handle, HasBuilder, KhrAccelerationStructureExtensionDeviceCommands};
+use vulkanalia::vk::{ExtDescriptorBufferExtensionDeviceCommands, Handle, HasBuilder, KhrAccelerationStructureExtensionDeviceCommands};
 use crate::{Allocation, CommandBuffer, DevicePointer, Gpu, HasIndexType, HazardFlags, Memory, MemoryAllocation, MemoryAllocator, Stage};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
