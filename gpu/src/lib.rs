@@ -18,7 +18,7 @@ use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use smart_default::SmartDefault;
 use vulkanalia::{vk, Device, Instance, Version};
-use vulkanalia::vk::{DeviceV1_0, DeviceV1_3, ExtDescriptorBufferExtensionDeviceCommands, ExtDeviceFaultExtensionDeviceCommands, ExtMeshShaderExtensionDeviceCommands, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrBufferDeviceAddressExtensionDeviceCommands, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrSynchronization2ExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
+use vulkanalia::vk::{DeviceV1_0, DeviceV1_2, DeviceV1_3, ExtDescriptorBufferExtensionDeviceCommands, ExtDeviceFaultExtensionDeviceCommands, ExtMeshShaderExtensionDeviceCommands, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrBufferDeviceAddressExtensionDeviceCommands, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrSynchronization2ExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
 use vulkanalia_vma as vma;
 use vulkanalia_vma::Alloc;
 use crate::vulkan::{create_logical_device, create_semaphore, create_shader, create_swapchain, find_suitable_device, get_cull_mode, get_front_face, get_sample_count_flag, AccelerationStructureInfo, CommandBufferPool, DescriptorSizes, PipelineLayout, PooledCommandBuffer, QueueFamilies, Queues, Swapchain};
@@ -490,6 +490,33 @@ pub struct ViewDesc {
     pub base_layer: u16,
     #[default = 0xffff]
     pub layer_count: u16,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct DrawIndirectCommand {
+    vertex_count: u32,
+    instance_count: u32,
+    first_vertex: u32,
+    first_instance: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct DrawIndexedIndirectCommand {
+    index_count: u32,
+    instance_count: u32,
+    first_index: u32,
+    vertex_offset: u32,
+    first_instance: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct DrawMeshTasksIndirectCommand {
+    group_count_x: u32,
+    group_count_y: u32,
+    group_count_z: u32,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]
@@ -1162,7 +1189,10 @@ impl<'a> CommandBuffer<'a> {
         unsafe { self.gpu.device.cmd_dispatch(self.buffer, x, y, z) };
     }
     pub fn dispatch_indirect(&mut self, data: DevicePointer, dimensions: DevicePointer) {
-        todo!()
+        let (buffer, offset) = self.gpu.device_addr_to_buffer_offset(dimensions)
+            .expect("invalid indirect buffer");
+        self.push_compute_pipeline_data(data);
+        unsafe { self.gpu.device.cmd_dispatch_indirect(self.buffer, buffer, offset) };
     }
 
     fn image_barrier_raw(&mut self, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout, image: vk::Image,
@@ -1330,6 +1360,36 @@ impl<'a> CommandBuffer<'a> {
         self.push_graphics_pipeline_data(vertex_data, pixel_data);
         unsafe { self.gpu.device.cmd_draw(self.buffer, vertex_count, instance_count, first_vertex, first_instance) };
     }
+    pub fn draw_instanced_indirect(&mut self, vertex_data: DevicePointer, pixel_data: DevicePointer,
+                                   args: DevicePointer, draw_count: u32, stride: u32) {
+        let (buffer, offset) = self.gpu.device_addr_to_buffer_offset(args)
+            .expect("invalid indirect buffer");
+        self.push_graphics_pipeline_data(vertex_data, pixel_data);
+        unsafe { self.gpu.device.cmd_draw_indirect(
+            self.buffer, buffer, offset, draw_count, stride) };
+    }
+    pub fn draw_instanced_indirect_count(&mut self, vertex_data: DevicePointer, pixel_data: DevicePointer,
+                                         args: DevicePointer, draw_count: DevicePointer,
+                                         max_draw_count: u32, stride: u32) {
+        let (args_buffer, args_offset) = self.gpu.device_addr_to_buffer_offset(args)
+            .expect("invalid indirect buffer");
+        let (count_buffer, count_offset) = self.gpu.device_addr_to_buffer_offset(draw_count)
+            .expect("invalid count buffer");
+        self.push_graphics_pipeline_data(vertex_data, pixel_data);
+        unsafe { self.gpu.device.cmd_draw_indirect_count(
+            self.buffer,
+            args_buffer, args_offset,
+            count_buffer, count_offset,
+            max_draw_count, stride) };
+    }
+
+    fn bind_index_buffer(&mut self, indices: DevicePointer, index_type: IndexType) {
+        let (buffer, offset) = self.gpu.device_addr_to_buffer_offset(indices)
+            .expect("invalid index buffer");
+        unsafe { self.gpu.device.cmd_bind_index_buffer(
+            self.buffer, buffer, offset,
+            vk::IndexType::from_raw(index_type as i32)) };
+    }
 
     pub fn draw_indexed(&mut self, vertex_data: DevicePointer, pixel_data: DevicePointer,
                         indices: DevicePointer, index_count: u32, index_type: IndexType) {
@@ -1340,25 +1400,41 @@ impl<'a> CommandBuffer<'a> {
                                   indices: DevicePointer, index_count: u32, first_index: u32,
                                   index_type: IndexType, vertex_offset: i32, instance_count: u32,
                                   first_instance: u32) {
-        let (buffer, offset) = self.gpu.device_addr_to_buffer_offset(indices)
-            .expect("invalid index buffer");
         self.push_graphics_pipeline_data(vertex_data, pixel_data);
+        self.bind_index_buffer(indices, index_type);
         unsafe {
-            self.gpu.device.cmd_bind_index_buffer(self.buffer, buffer, offset,
-                                                  vk::IndexType::from_raw(index_type as i32));
             self.gpu.device.cmd_draw_indexed(self.buffer, index_count, instance_count, first_index,
                                              vertex_offset, first_instance);
         }
     }
     pub fn draw_indexed_instanced_indirect(&mut self, vertex_data: DevicePointer, pixel_data: DevicePointer,
-                                           indices: DevicePointer, args: DevicePointer) {
-        todo!()
+                                           indices: DevicePointer, index_type: IndexType, args: DevicePointer,
+                                           draw_count: u32, stride: u32) {
+        let (args_buffer, args_offset) = self.gpu.device_addr_to_buffer_offset(args)
+            .expect("invalid indirect buffer");
+        self.push_graphics_pipeline_data(vertex_data, pixel_data);
+        self.bind_index_buffer(indices, index_type);
+        unsafe {
+            self.gpu.device.cmd_draw_indexed_indirect(
+                self.buffer, args_buffer, args_offset, draw_count, stride);
+        }
     }
-    pub fn draw_indexed_instanced_indirect_multi(&mut self,
-                                                 vertex_data: DevicePointer, vertex_stride: usize,
-                                                 pixel_data: DevicePointer, pixel_stride: usize,
-                                                 args: DevicePointer, draw_count: DevicePointer) {
-        todo!()
+    pub fn draw_indexed_instanced_indirect_count(&mut self, vertex_data: DevicePointer, pixel_data: DevicePointer,
+                                                 indices: DevicePointer, index_type: IndexType, args: DevicePointer,
+                                                 draw_count: DevicePointer, max_draw_count: u32, stride: u32) {
+        let (args_buffer, args_offset) = self.gpu.device_addr_to_buffer_offset(args)
+            .expect("invalid indirect buffer");
+        let (count_buffer, count_offset) = self.gpu.device_addr_to_buffer_offset(draw_count)
+            .expect("invalid count buffer");
+        self.push_graphics_pipeline_data(vertex_data, pixel_data);
+        self.bind_index_buffer(indices, index_type);
+        unsafe {
+            self.gpu.device.cmd_draw_indexed_indirect_count(
+                self.buffer,
+                args_buffer, args_offset,
+                count_buffer, count_offset,
+                max_draw_count, stride);
+        }
     }
 
     fn push_mesh_pipeline_data(&mut self, meshlet_data: DevicePointer, pixel_data: DevicePointer) {
@@ -1371,8 +1447,26 @@ impl<'a> CommandBuffer<'a> {
         unsafe { self.gpu.device.cmd_draw_mesh_tasks_ext(self.buffer, x, y, z) };
     }
     pub fn draw_meshlets_indirect(&mut self, meshlet_data: DevicePointer, pixel_data: DevicePointer,
-                                  dimensions: DevicePointer) {
-        todo!()
+                                  dimensions: DevicePointer, draw_count: u32, stride: u32) {
+        let (buffer, offset) = self.gpu.device_addr_to_buffer_offset(dimensions)
+            .expect("invalid indirect buffer");
+        self.push_mesh_pipeline_data(meshlet_data, pixel_data);
+        unsafe { self.gpu.device.cmd_draw_mesh_tasks_indirect_ext(
+            self.buffer, buffer, offset, draw_count, stride) };
+    }
+    pub fn draw_meshlets_indirect_count(&mut self, meshlet_data: DevicePointer, pixel_data: DevicePointer,
+                                        dimensions: DevicePointer, draw_count: DevicePointer,
+                                        max_draw_count: u32, stride: u32) {
+        let (args_buffer, args_offset) = self.gpu.device_addr_to_buffer_offset(dimensions)
+            .expect("invalid indirect buffer");
+        let (count_buffer, count_offset) = self.gpu.device_addr_to_buffer_offset(draw_count)
+            .expect("invalid count buffer");
+        self.push_mesh_pipeline_data(meshlet_data, pixel_data);
+        unsafe { self.gpu.device.cmd_draw_mesh_tasks_indirect_count_ext(
+            self.buffer,
+            args_buffer, args_offset,
+            count_buffer, count_offset,
+            max_draw_count, stride) };
     }
 }
 
