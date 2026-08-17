@@ -29,9 +29,9 @@ pretty_env_logger = { workspace = true }
 glam = { workspace = true }
 bytemuck = { workspace = true }
 image = "0.25.9"
-lz4 = "1.28.1"
+lz4_flex = "0.14.0"
 gltf = { version = "1.4.1", features = ["utils"] }
 itertools = "0.14.0"
 half = { version = "2.7.1", features = ["bytemuck"] }
 meshopt = "0.6.2"
-shaderc = { version = "0.10.1", features = ["build-from-source"] }
+shaderc = { version = "0.10.1", features = ["build-from-source", "prefer-static-linking"] }

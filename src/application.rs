@@ -117,7 +117,7 @@ fn load_image(path: impl AsRef<Path>, gpu: &gpu::Gpu) -> Result<(u32, u32, gpu::
         file.read_exact(bytemuck::cast_slice_mut(&mut header))?;
         let width = header[0];
         let height = header[1];
-        let mut decoder = lz4::Decoder::new(file)?;
+        let mut decoder = lz4_flex::frame::FrameDecoder::new(&mut file);
         let length = width as usize * height as usize * 4;
         let mut alloc = gpu.alloc::<u8>(length)?;
         decoder.read_exact(alloc.host_mut())?;
@@ -130,7 +130,7 @@ fn load_image(path: impl AsRef<Path>, gpu: &gpu::Gpu) -> Result<(u32, u32, gpu::
         let alloc = gpu.allocator().alloc_data(img.as_bytes())?;
         let mut file = fs::File::create(cache_path)?;
         file.write_all(bytemuck::cast_slice(&[width, height]))?;
-        let mut encoder = lz4::EncoderBuilder::new().level(9).build(file)?;
+        let mut encoder = lz4_flex::frame::FrameEncoder::new(&mut file);
         let length = width as usize * height as usize * 4;
         assert_eq!(img.as_bytes().len(), length, "image length mismatch");
         encoder.write_all(img.as_bytes())?;
