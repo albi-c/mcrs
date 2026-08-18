@@ -73,11 +73,7 @@ vec3 getParticlePosition(in Particle p, float time) {
 
     vec3 axis = normalize(velocity);
 
-    vec3 reference = mix(
-        vec3(1.0, 0.0, 0.0),
-        vec3(0.0, 1.0, 0.0),
-        step(0.9, abs(axis.x))
-    );
+    vec3 reference = abs(axis.x) > 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
 
     vec3 u = normalize(cross(axis, reference));
     vec3 v = cross(axis, u);
