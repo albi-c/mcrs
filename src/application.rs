@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::Instant;
 use anyhow::{anyhow, Result};
 use bytemuck::{Pod, Zeroable};
-use glam::{IVec3, Mat4, Quat, Vec2, Vec3, Vec3A, Vec4, Vec4Swizzles};
+use glam::{IVec3, Mat4, Vec2, Vec3, Vec3A, Vec4, Vec4Swizzles};
 use half::f16;
 use image::{EncodableLayout, ImageReader};
 use winit::event::ElementState;
@@ -369,9 +369,6 @@ impl<'a> Application<'a> {
         let gltf = load_gltf_cached(
             "models/Sponza_gltf/glTF/Sponza.gltf", "models/sponza_gltf.cache",
             gpu, &mut tex_descriptors, 2)?;
-        // let gltf = gltf::Model::load(
-        //     gpu, "models/Sponza_gltf/glTF/Sponza.gltf",
-        //     &mut tex_descriptors, 1)?;
 
         let bl_as = create_bottom_level_as(
             gpu, &queue, &gltf.scenes[0], Vec3::new(1.0, -1.0, 1.0))?;
@@ -734,6 +731,7 @@ impl<'a> Application<'a> {
             depth_test_state: Some(&depth_test_desc),
             color_targets: &[color_target],
             depth_target: Some(&depth_target),
+            render_area_size: self.textures.post_color.dimensions2(),
             ..Default::default()
         };
         command_buffer.begin_render_pass(&render_pass_desc);
@@ -765,6 +763,7 @@ impl<'a> Application<'a> {
             depth_test_state: Some(&depth_test_desc),
             color_targets: &[color_target],
             depth_target: Some(&depth_target),
+            render_area_size: self.textures.post_color.dimensions2(),
             ..Default::default()
         };
         command_buffer.begin_render_pass(&render_pass_desc);
@@ -840,10 +839,6 @@ impl<'a> Application<'a> {
         let yaw = self.camera_look.x.to_radians();
         let pitch = self.camera_look.y.to_radians();
 
-        self.camera_front = Vec3::new(
-            yaw.cos() * pitch.cos(),
-            pitch.sin(),
-            yaw.sin() * pitch.cos(),
-        ).normalize();
+        self.camera_front = Vec3::new(0.0, 0.0, 1.0).rotate_x(-pitch).rotate_y(-yaw);
     }
 }

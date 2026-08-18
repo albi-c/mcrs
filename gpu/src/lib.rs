@@ -697,6 +697,9 @@ impl<'a> Texture<'a> {
     pub fn dimensions(&self) -> (u32, u32, u32) {
         self.dimensions
     }
+    pub fn dimensions2(&self) -> (u32, u32) {
+        (self.dimensions.0, self.dimensions.1)
+    }
 
     fn view_type(ty: TextureType) -> vk::ImageViewType {
         match ty {

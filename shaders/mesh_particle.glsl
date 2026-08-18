@@ -122,11 +122,10 @@ void main() {
     ) * scale;
 
     // spherical (broken) / cylindrical billboarding
-//    vec3 pos = basePos + vec3(-1.0, 1.0, 1.0) * d.cameraRight.xyz * pointOffset.x + d.cameraUp.xyz * pointOffset.y;
-    vec3 pos = basePos + vec3(-1.0, 1.0, 1.0) * d.cameraRight.xyz * pointOffset.x + vec3(0.0, pointOffset.y, 0.0);
+    vec3 pos = basePos + vec3(-1.0, 1.0, 1.0) * d.cameraRight.xyz * pointOffset.x + d.cameraUp.xyz * pointOffset.y;
+//    vec3 pos = basePos + vec3(-1.0, 1.0, 1.0) * d.cameraRight.xyz * pointOffset.x + vec3(0.0, pointOffset.y, 0.0);
 
     gl_MeshVerticesEXT[gl_LocalInvocationIndex].gl_Position = d.mvp * vec4(pos, 1.0);
     outUvs[gl_LocalInvocationIndex] = basePointOffset + 0.5;
     outTextures[gl_LocalInvocationIndex] = p.tex;
 }
-
