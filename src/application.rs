@@ -685,13 +685,19 @@ impl<'a> Application<'a> {
             self.particle_groups.device(),
         )])?;
 
+        let particle_camera_right = Vec3A::new(1.0, 0.0, 0.0).rotate_y(-self.camera_look.x.to_radians());
+        let billboard_spherical = true;
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
         struct ParticleMeshData(Mat4, Vec3A, Vec3A, gpu::DevicePointer, f32, u32);
         let particle_mesh_data = arena.alloc_data(&[ParticleMeshData(
             mat_perspective * mat_flip * mat_view,
-            Vec3A::new(1.0, 0.0, 0.0).rotate_y(-self.camera_look.x.to_radians()),
-            self.camera_front.to_vec3a(),
+            particle_camera_right,
+            if billboard_spherical {
+                self.camera_front.to_vec3a().cross(particle_camera_right).normalize()
+            } else {
+                Vec3A::Y
+            },
             self.mesh_particles.device(),
             time as f32,
             0,
