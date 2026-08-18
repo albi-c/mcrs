@@ -35,7 +35,7 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Mes
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshData {
     mat4 mvp;
     vec4 cameraRight;
-    vec4 cameraUp;
+    vec4 cameraFront;
     MeshDataParticles particles;
     float time;
     uint _padding;
@@ -105,7 +105,7 @@ void main() {
 
     // TODO: time calculations in f64
     // TODO: add texture rotation in screen space
-    // TODO: fix spherical billboarding, make spherical/cylindrical selectable with parameter
+    // TODO: make spherical/cylindrical selectable with parameter
     // TODO: add x/y scale parameters for non square textures and changing size
     // TODO: add shrinkage over time
     // TODO: add option to despawn or freeze once lifetime is reached instead of looping, would require f64 timeOffset
@@ -121,9 +121,10 @@ void main() {
         -basePointOffset.x * sin(rotation) + basePointOffset.y * cos(rotation)
     ) * scale;
 
-    // spherical (broken) / cylindrical billboarding
-    vec3 pos = basePos + vec3(-1.0, 1.0, 1.0) * d.cameraRight.xyz * pointOffset.x + d.cameraUp.xyz * pointOffset.y;
-//    vec3 pos = basePos + vec3(-1.0, 1.0, 1.0) * d.cameraRight.xyz * pointOffset.x + vec3(0.0, pointOffset.y, 0.0);
+    // spherical / cylindrical billboarding
+    vec3 up = normalize(cross(d.cameraFront.xyz, d.cameraRight.xyz));
+    vec3 pos = basePos + vec3(1.0, 1.0, 1.0) * d.cameraRight.xyz * pointOffset.x + up * pointOffset.y;
+//    vec3 pos = basePos + d.cameraRight.xyz * pointOffset.x + vec3(0.0, pointOffset.y, 0.0);
 
     gl_MeshVerticesEXT[gl_LocalInvocationIndex].gl_Position = d.mvp * vec4(pos, 1.0);
     outUvs[gl_LocalInvocationIndex] = basePointOffset + 0.5;

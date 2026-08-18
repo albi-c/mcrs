@@ -690,8 +690,8 @@ impl<'a> Application<'a> {
         struct ParticleMeshData(Mat4, Vec3A, Vec3A, gpu::DevicePointer, f32, u32);
         let particle_mesh_data = arena.alloc_data(&[ParticleMeshData(
             mat_perspective * mat_flip * mat_view,
-            mat_view.col(0).xyz().to_vec3a(),
-            mat_view.col(1).xyz().to_vec3a(),
+            Vec3A::new(1.0, 0.0, 0.0).rotate_y(-self.camera_look.x.to_radians()),
+            self.camera_front.to_vec3a(),
             self.mesh_particles.device(),
             time as f32,
             0,
