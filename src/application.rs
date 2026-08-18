@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::Instant;
 use anyhow::{anyhow, Result};
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Quat, Vec2, Vec3, Vec3A, Vec4, Vec4Swizzles};
+use glam::{IVec3, Mat4, Quat, Vec2, Vec3, Vec3A, Vec4, Vec4Swizzles};
 use half::f16;
 use image::{EncodableLayout, ImageReader};
 use winit::event::ElementState;
@@ -80,6 +80,21 @@ struct ParticleGroup {
     pub rot_speed: f16,
     pub rot_speed_variability: u8,
     pub scale_variability: u8,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct MeshParticle {
+    pub origin: [f16; 3],
+    pub velocity: [f16; 3],
+    pub acceleration: [f16; 3],
+    pub spiral_radius: f16,
+    pub spiral_offset: f16,
+    pub spiral_speed: f16,
+    pub spiral_velocity_influence: f16,
+    pub time_offset: f16,
+    pub lifetime: f16,
+    pub tex: u16,
 }
 
 impl Material {
@@ -246,6 +261,7 @@ struct Shaders<'a> {
 
     pub compute_particle: gpu::Shader<'a>,
     pub vertex_particle: gpu::Shader<'a>,
+    pub mesh_particle: gpu::Shader<'a>,
     pub pixel_particle: gpu::Shader<'a>,
 }
 
@@ -275,6 +291,7 @@ pub struct Application<'a> {
     particle_texture: gpu::Texture<'a>,
     particle_groups: gpu::Allocation<'a, ParticleGroup>,
     particles: gpu::Allocation<'a, Particle>,
+    mesh_particles: gpu::Allocation<'a, MeshParticle>,
 
     keys: HashMap<PhysicalKey, bool>,
     camera_pos: Vec3,
@@ -437,6 +454,31 @@ impl<'a> Application<'a> {
             }
         }
 
+        let mut mesh_particles = gpu.allocator().alloc(16 * 16 * 16)?;
+        let mut mesh_particles_idx = 0;
+        for x in -8..8 {
+            for y in -8..8 {
+                for z in -8..8 {
+                    let xyz = IVec3::new(x, y, z).as_vec3().normalize_or_zero() * 2.5;
+                    let vel = xyz.to_array().map(f16::from_f32);
+                    let acc = xyz.to_array().map(|x| f16::from_f32(x * -1.0));
+                    mesh_particles.host_mut()[mesh_particles_idx] = MeshParticle {
+                        origin: [f16::ZERO, f16::from_f32(2.0), f16::ZERO],
+                        velocity: vel,
+                        acceleration: acc,
+                        spiral_radius: f16::ZERO,
+                        spiral_offset: f16::ZERO,
+                        spiral_speed: f16::ZERO,
+                        spiral_velocity_influence: f16::ZERO,
+                        time_offset: f16::from_f32(mesh_particles_idx as f32 * 0.0),
+                        lifetime: f16::from_f32(2.0),
+                        tex: 1,
+                    };
+                    mesh_particles_idx += 1;
+                }
+            }
+        }
+
         let time = Instant::now();
         let shaders = Shaders {
             vertex: load_shader("shaders/vert.glsl", gpu::ShaderStage::Vertex, gpu)?,
@@ -447,6 +489,7 @@ impl<'a> Application<'a> {
 
             compute_particle: load_shader("shaders/comp_particle.glsl", gpu::ShaderStage::Compute, gpu)?,
             vertex_particle: load_shader("shaders/vert_particle.glsl", gpu::ShaderStage::Vertex, gpu)?,
+            mesh_particle: load_shader("shaders/mesh_particle.glsl", gpu::ShaderStage::Mesh, gpu)?,
             pixel_particle: load_shader("shaders/frag_particle.glsl", gpu::ShaderStage::Pixel, gpu)?,
         };
         println!("Loaded shaders in {:.3} seconds", time.elapsed().as_secs_f32());
@@ -477,6 +520,7 @@ impl<'a> Application<'a> {
             particle_texture,
             particle_groups,
             particles,
+            mesh_particles,
 
             keys: HashMap::new(),
             camera_pos: Vec3::new(0.0, 0.0, 0.0),
@@ -644,12 +688,31 @@ impl<'a> Application<'a> {
             self.particle_groups.device(),
         )])?;
 
+        #[repr(C)]
+        #[derive(Copy, Clone, Debug, Pod, Zeroable)]
+        struct ParticleMeshData(Mat4, Vec3A, Vec3A, gpu::DevicePointer, f32, u32);
+        let particle_mesh_data = arena.alloc_data(&[ParticleMeshData(
+            mat_perspective * mat_flip * mat_view,
+            mat_view.col(0).xyz().to_vec3a(),
+            mat_view.col(1).xyz().to_vec3a(),
+            self.mesh_particles.device(),
+            time as f32,
+            0,
+        )])?;
+
         let mut command_buffer = self.queue.create_buffer()?;
 
         let mut swapchain_target = self.gpu.next_swapchain_image(ctx, &mut command_buffer)?;
         swapchain_target.clear_value = gpu::ClearValue::Color([0.08, 0.0, 0.0, 1.0]);
 
         self.update_particles(&mut command_buffer, arena, dt)?;
+
+        command_buffer.set_descriptor_heap(
+            Some(&self.tex_descriptors),
+            None,
+            Some(&self.sampler_descriptors),
+            Some(&self.accel_struct_descriptors),
+        );
 
         let color_target = gpu::Target {
             view: self.textures.post_color.view()?,
@@ -674,17 +737,13 @@ impl<'a> Application<'a> {
             ..Default::default()
         };
         command_buffer.begin_render_pass(&render_pass_desc);
+
         command_buffer.bind_shaders([&self.shaders.vertex, &self.shaders.pixel]);
-        command_buffer.set_descriptor_heap(
-            Some(&self.tex_descriptors),
-            None,
-            Some(&self.sampler_descriptors),
-            Some(&self.accel_struct_descriptors),
-        );
         let indices = &self.gltf.scenes[0].indices;
         command_buffer.draw_indexed(
             vertex_data.device(), pixel_data.device(),
             indices.device(), indices.len() as u32, gpu::IndexType::U32);
+
         command_buffer.end_render_pass();
 
         command_buffer.barrier(gpu::Stage::Compute, gpu::Stage::VertexShader, gpu::HazardFlags::empty());
@@ -709,17 +768,21 @@ impl<'a> Application<'a> {
             ..Default::default()
         };
         command_buffer.begin_render_pass(&render_pass_desc);
+
         command_buffer.bind_shaders([&self.shaders.vertex_particle, &self.shaders.pixel_particle]);
-        command_buffer.set_descriptor_heap(
-            Some(&self.tex_descriptors),
-            None,
-            Some(&self.sampler_descriptors),
-            Some(&self.accel_struct_descriptors),
-        );
         command_buffer.draw_instanced(
             particle_vertex_data.device(), gpu::DevicePointer::null(),
             self.particles.len() as u32 * 6, 1, 0, 0);
+
+        command_buffer.bind_shaders([&self.shaders.mesh_particle, &self.shaders.pixel_particle]);
+        command_buffer.draw_meshlets(
+            particle_mesh_data.device(), gpu::DevicePointer::null(),
+            (self.mesh_particles.len().div_exact(16)
+                 .expect("mesh particle count must be divisible by 16") as u32, 1, 1));
+
         command_buffer.end_render_pass();
+
+        command_buffer.barrier(gpu::Stage::PixelShader, gpu::Stage::PixelShader, gpu::HazardFlags::empty());
 
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
@@ -733,16 +796,12 @@ impl<'a> Application<'a> {
             ..Default::default()
         };
         command_buffer.begin_render_pass(&post_pass_desc);
+
         command_buffer.bind_shaders([&self.shaders.mesh_post, &self.shaders.pixel_post]);
-        command_buffer.set_descriptor_heap(
-            Some(&self.tex_descriptors),
-            None,
-            Some(&self.sampler_descriptors),
-            Some(&self.accel_struct_descriptors),
-        );
         command_buffer.draw_meshlets(
             gpu::DevicePointer::null(), post_pixel_data.device(),
             (1, 1, 1));
+
         command_buffer.end_render_pass();
 
         self.queue.submit(command_buffer, &self.frame_semaphore, self.next_frame)?;

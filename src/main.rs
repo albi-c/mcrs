@@ -1,5 +1,6 @@
 #![feature(file_buffered)]
 #![feature(map_try_insert)]
+#![feature(exact_div)]
 
 mod application;
 mod gltf;

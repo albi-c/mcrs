@@ -3,7 +3,7 @@
 #include "common.glsl"
 
 layout(location = 0) in vec2 inUv;
-layout(location = 1) flat in uint16_t inTex;
+layout(location = 1) flat in uint16_t inTexture;
 
 layout(location = 0) out vec4 outColor;
 
@@ -17,7 +17,7 @@ layout(std430, push_constant) uniform Data {
 } data;
 
 void main() {
-    vec4 texColor = texture(sampler2D(textures[nonuniformEXT(inTex)], samplers[0]), inUv);
+    vec4 texColor = texture(sampler2D(textures[nonuniformEXT(inTexture)], samplers[0]), inUv);
     if (texColor.a < 0.1) {
         discard;
     }

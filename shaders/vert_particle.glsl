@@ -3,7 +3,7 @@
 #include "common.glsl"
 
 layout(location = 0) out vec2 outUv;
-layout(location = 1) flat out uint16_t outTex;
+layout(location = 1) flat out uint16_t outTexture;
 
 struct Particle {
     float16_t x;
@@ -112,7 +112,7 @@ void main() {
 
     Particle particle = d.particles.data[i];
     ParticleGroup group = d.groups.data[particle.group];
-    outTex = group.tex;
+    outTexture = group.tex;
 
     float rotSpeedVar = float(group.rot_speed_scale_var & 0xff) / 256.0;
     float scaleVar = float(group.rot_speed_scale_var >> 8) / 256.0;
