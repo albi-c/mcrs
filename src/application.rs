@@ -215,7 +215,8 @@ fn compile_shader(glsl: &str, path: &str, stage: gpu::ShaderStage) -> Result<sha
     let shader_stage = match stage {
         gpu::ShaderStage::Vertex => shaderc::ShaderKind::Vertex,
         gpu::ShaderStage::Pixel => shaderc::ShaderKind::Fragment,
-        gpu::ShaderStage::Mesh => shaderc::ShaderKind::Mesh,
+        gpu::ShaderStage::Task => shaderc::ShaderKind::Task,
+        gpu::ShaderStage::Mesh | gpu::ShaderStage::MeshWithTask => shaderc::ShaderKind::Mesh,
         gpu::ShaderStage::Compute => shaderc::ShaderKind::Compute,
     };
     let compiler = shaderc::Compiler::new()?;

@@ -248,7 +248,9 @@ bitflags! {
 pub enum ShaderStage {
     Vertex,
     Pixel,
+    Task,
     Mesh,
+    MeshWithTask,
     Compute,
 }
 
@@ -1155,7 +1157,9 @@ impl<'a> CommandBuffer<'a> {
     }
 
     pub fn bind_shaders<const N: usize>(&mut self, shaders: [&Shader<'_>; N]) {
-        self.unbind_shaders_raw(&[vk::ShaderStageFlags::VERTEX, vk::ShaderStageFlags::MESH_EXT]);
+        self.unbind_shaders_raw(&[
+            vk::ShaderStageFlags::VERTEX,
+            vk::ShaderStageFlags::MESH_EXT, vk::ShaderStageFlags::TASK_EXT]);
 
         let stages = shaders.map(|s| s.stage);
         let handles = shaders.map(|s| s.shader);

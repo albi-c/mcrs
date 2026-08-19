@@ -633,7 +633,8 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         .descriptor_buffer(true);
 
     let mut info_mesh_shader = vk::PhysicalDeviceMeshShaderFeaturesEXT::builder()
-        .mesh_shader(true);
+        .mesh_shader(true)
+        .task_shader(true);
 
     let mut info_ray_query = vk::PhysicalDeviceRayQueryFeaturesKHR::builder()
         .ray_query(true);
@@ -706,15 +707,24 @@ pub fn get_stage(stage: ShaderStage) -> vk::ShaderStageFlags {
     match stage {
         ShaderStage::Vertex => vk::ShaderStageFlags::VERTEX,
         ShaderStage::Pixel => vk::ShaderStageFlags::FRAGMENT,
-        ShaderStage::Mesh => vk::ShaderStageFlags::MESH_EXT,
+        ShaderStage::Task => vk::ShaderStageFlags::TASK_EXT,
+        ShaderStage::Mesh | ShaderStage::MeshWithTask => vk::ShaderStageFlags::MESH_EXT,
         ShaderStage::Compute => vk::ShaderStageFlags::COMPUTE,
     }
 }
 
 fn get_next_stage(stage: ShaderStage) -> vk::ShaderStageFlags {
     match stage {
-        ShaderStage::Vertex | ShaderStage::Mesh => vk::ShaderStageFlags::FRAGMENT,
+        ShaderStage::Vertex | ShaderStage::Mesh | ShaderStage::MeshWithTask => vk::ShaderStageFlags::FRAGMENT,
+        ShaderStage::Task => vk::ShaderStageFlags::TASK_EXT,
         ShaderStage::Pixel | ShaderStage::Compute => vk::ShaderStageFlags::empty(),
+    }
+}
+
+fn get_shader_flags(stage: ShaderStage) -> vk::ShaderCreateFlagsEXT {
+    match stage {
+        ShaderStage::Mesh => vk::ShaderCreateFlagsEXT::NO_TASK_SHADER,
+        _ => vk::ShaderCreateFlagsEXT::empty(),
     }
 }
 
@@ -738,7 +748,8 @@ pub fn create_shader<'a>(gpu: &'a Gpu, spirv: &[u8], stage: ShaderStage) -> Resu
         .code_type(vk::ShaderCodeTypeEXT::SPIRV)
         .push_constant_ranges(&push_constant_ranges)
         .name(b"main\0")
-        .set_layouts(&gpu.pipeline_layout.set_layouts);
+        .set_layouts(&gpu.pipeline_layout.set_layouts)
+        .flags(get_shader_flags(stage));
 
     let infos = [info];
     let shader = unsafe { gpu.device.create_shaders_ext(&infos, None)?.0[0] };
