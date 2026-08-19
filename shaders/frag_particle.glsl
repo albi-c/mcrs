@@ -4,6 +4,7 @@
 
 layout(location = 0) in vec2 inUv;
 layout(location = 1) flat in uint16_t inTexture;
+layout(location = 2) in vec3 inColor;
 
 layout(location = 0) out vec4 outColor;
 
@@ -21,5 +22,5 @@ void main() {
     if (texColor.a < 0.1) {
         discard;
     }
-    outColor = vec4(texColor.rgb, 1.0);
+    outColor = vec4(texColor.rgb * inColor, 1.0);
 }

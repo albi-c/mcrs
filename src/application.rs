@@ -6,6 +6,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::Instant;
 use anyhow::{anyhow, Result};
+use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use glam::{IVec3, Mat4, Vec2, Vec3, Vec3A, Vec4, Vec4Swizzles};
 use half::f16;
@@ -82,19 +83,39 @@ struct ParticleGroup {
     pub scale_variability: u8,
 }
 
+#[repr(transparent)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct MeshParticleFlags(u8);
+bitflags! {
+    impl MeshParticleFlags : u8 {
+        const BillboardCylindrical = 0x01;
+        const StopOnEnd = 0x02;
+        const HideOnEnd = 0x04;
+        const NoRender = 0x08;
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 struct MeshParticle {
+    pub time_offset: f64,
     pub origin: [f16; 3],
     pub velocity: [f16; 3],
     pub acceleration: [f16; 3],
+    pub acceleration_change: [f16; 3],
+    pub scale: [f16; 2],
+    pub scale_change: f16,
+    pub rotation: f16,
+    pub rotation_change: f16,
     pub spiral_radius: f16,
     pub spiral_offset: f16,
     pub spiral_speed: f16,
     pub spiral_velocity_influence: f16,
-    pub time_offset: f16,
     pub lifetime: f16,
     pub tex: u16,
+    pub color: [u8; 3],
+    pub flags: MeshParticleFlags,
+    pub _padding: [u16; 3],
 }
 
 impl Material {
@@ -412,7 +433,7 @@ impl<'a> Application<'a> {
         ];
         let lights = gpu.allocator().alloc_data(&LIGHTS)?;
 
-        const PARTICLE_SCALE: f32 = 3.0;
+        const PARTICLE_SCALE: f32 = 3.0 * 0.0625;
         const PARTICLE_ROT_SPEED: f32 = 1.0;
         let particle_groups = gpu.allocator().alloc_with_data(LIGHTS.len(), |i| {
             let pos = LIGHTS[i].pos;
@@ -424,8 +445,8 @@ impl<'a> Application<'a> {
                 ],
                 tex: 1,
                 scale: [
-                    f16::from_f32(PARTICLE_SCALE * 0.0625f32),
-                    f16::from_f32(PARTICLE_SCALE * 0.0625f32 * scale_x),
+                    f16::from_f32(PARTICLE_SCALE),
+                    f16::from_f32(PARTICLE_SCALE * scale_x),
                 ],
                 rot_speed: f16::from_f32(PARTICLE_ROT_SPEED),
                 rot_speed_variability: 255,
@@ -460,16 +481,24 @@ impl<'a> Application<'a> {
                     let vel = xyz.to_array().map(f16::from_f32);
                     let acc = xyz.to_array().map(|x| f16::from_f32(x * -1.0));
                     mesh_particles.host_mut()[mesh_particles_idx] = MeshParticle {
+                        time_offset: mesh_particles_idx as f64 * 0.0,
                         origin: [f16::ZERO, f16::from_f32(2.0), f16::ZERO],
                         velocity: vel,
                         acceleration: acc,
+                        acceleration_change: [f16::ZERO; 3],
+                        scale: [f16::from_f32(PARTICLE_SCALE * scale_x), f16::from_f32(PARTICLE_SCALE)],
+                        scale_change: f16::ZERO,
+                        rotation: f16::ZERO,
+                        rotation_change: f16::ZERO,
                         spiral_radius: f16::ZERO,
                         spiral_offset: f16::ZERO,
                         spiral_speed: f16::ZERO,
                         spiral_velocity_influence: f16::ZERO,
-                        time_offset: f16::from_f32(mesh_particles_idx as f32 * 0.0),
                         lifetime: f16::from_f32(2.0),
                         tex: 1,
+                        color: [0xff; 3],
+                        flags: MeshParticleFlags::empty(),
+                        _padding: [0; 3],
                     };
                     mesh_particles_idx += 1;
                 }
@@ -689,7 +718,7 @@ impl<'a> Application<'a> {
         let billboard_spherical = true;
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-        struct ParticleMeshData(Mat4, Vec3A, Vec3A, gpu::DevicePointer, f32, u32);
+        struct ParticleMeshData(Mat4, Vec3A, Vec3A, gpu::DevicePointer, f64);
         let particle_mesh_data = arena.alloc_data(&[ParticleMeshData(
             mat_perspective * mat_flip * mat_view,
             particle_camera_right,
@@ -699,8 +728,7 @@ impl<'a> Application<'a> {
                 Vec3A::Y
             },
             self.mesh_particles.device(),
-            time as f32,
-            0,
+            time,
         )])?;
 
         let mut command_buffer = self.queue.create_buffer()?;

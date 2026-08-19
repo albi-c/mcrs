@@ -603,7 +603,8 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         .shader_int64(true)
         .multi_draw_indirect(true)
         .sampler_anisotropy(true)
-        .shader_int16(true);
+        .shader_int16(true)
+        .shader_float64(true);
 
     let mut info_11 = vk::PhysicalDeviceVulkan11Features::builder()
         .storage_buffer_16bit_access(true)
@@ -616,7 +617,9 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         .descriptor_indexing(true)
         .shader_sampled_image_array_non_uniform_indexing(true)
         .shader_float16(true)
-        .buffer_device_address_capture_replay(true);
+        .buffer_device_address_capture_replay(true)
+        .shader_int8(true)
+        .storage_buffer_8bit_access(true);
 
     let mut info_13 = vk::PhysicalDeviceVulkan13Features::builder()
         .dynamic_rendering(true)

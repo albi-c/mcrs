@@ -4,6 +4,7 @@
 
 layout(location = 0) out vec2 outUv;
 layout(location = 1) flat out uint16_t outTexture;
+layout(location = 2) out vec3 outColor;
 
 struct Particle {
     float16_t x;
@@ -134,4 +135,5 @@ void main() {
 //    vec3 pos = worldPos + vec3(-1.0, 1.0, 1.0) * d.camera_right.xyz * pointOffset.x * scale.x + d.camera_up.xyz * pointOffset.y * scale.y;
     vec3 pos = worldPos + vec3(-1.0, 1.0, 1.0) * d.camera_right.xyz * pointOffset.x * scale.x + vec3(0.0, pointOffset.y * scale.y, 0.0);
     gl_Position = d.mvp * vec4(pos, 1.0);
+    outColor = vec3(1.0);
 }
