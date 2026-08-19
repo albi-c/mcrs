@@ -39,9 +39,9 @@ layout(std430, push_constant) uniform Data {
 
 vec4 readPacked(uint packed) {
     vec4 color = vec4(
-        float(packed & 0xff),
-        float((packed >> 8) & 0xff),
-        float((packed >> 16) & 0xff),
+        float(packed & 0xffu),
+        float((packed >> 8) & 0xffu),
+        float((packed >> 16) & 0xffu),
         float(packed >> 24)
     );
     return color / 255.0;
@@ -92,13 +92,13 @@ vec3 getSampledNormal(uint tex, vec3 viewPos, float strength) {
 
 void main() {
     uint texDiffuseRaw = inMat.x >> 16;
-    uint texDiffuse = texDiffuseRaw & 0x7fff;
-    uint texDisp = texDiffuse + (inMat.x & 0xf);
-    uint texMetallicRoughness = texDiffuse + ((inMat.x >> 4) & 0xf);
+    uint texDiffuse = texDiffuseRaw & 0x7fffu;
+    uint texDisp = texDiffuse + (inMat.x & 0xfu);
+    uint texMetallicRoughness = texDiffuse + ((inMat.x >> 4) & 0xfu);
 //    uint tex? = texDiffuse + ((inMat.x >> 8) & 0xf);
 //    uint tex? = texDiffuse + ((inMat.x >> 12) & 0xf);
 
-    vec4 sampleDiffuse = (texDiffuseRaw & 0x8000) != 0 ? vec4(1.0) : texture(sampler2D(textures[nonuniformEXT(texDiffuse)], samplers[0]), inUv);
+    vec4 sampleDiffuse = (texDiffuseRaw & 0x8000u) != 0 ? vec4(1.0) : texture(sampler2D(textures[nonuniformEXT(texDiffuse)], samplers[0]), inUv);
     if (sampleDiffuse.a < 0.001) {
         discard;
     }

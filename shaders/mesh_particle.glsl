@@ -97,16 +97,11 @@ vec3 getParticlePosition(in Particle p, float t) {
     return position + p.spiralRadius * cs.x * u + p.spiralRadius * cs.y * v;
 }
 
+shared bool willAnyRender;
+
 void main() {
     MeshData d = data.mesh;
-    if (gl_LocalInvocationIndex == 0) {
-        SetMeshOutputsEXT(VERTEX_COUNT, PRIMITIVE_COUNT);
-    }
     uvec2 localId = gl_LocalInvocationID.xy;
-    if (localId.x == 0) {
-        gl_PrimitiveTriangleIndicesEXT[2 * localId.y + 0] = uvec3(0, 1, 2) + gl_LocalInvocationIndex;
-        gl_PrimitiveTriangleIndicesEXT[2 * localId.y + 1] = uvec3(0, 2, 3) + gl_LocalInvocationIndex;
-    }
 
     Particle p = d.particles.data[PARTICLE_COUNT * gl_WorkGroupID.x + localId.y];
     uint flags = uint(p.flags);
@@ -114,23 +109,47 @@ void main() {
     double timeWithOffset = d.time + double(p.timeOffset);
     double lifetime = double(p.lifetime);
 
-    if ((flags & 0x08) != 0 || ((flags & 0x04) != 0 && timeWithOffset >= lifetime)) {
+    willAnyRender = false;
+
+    memoryBarrierShared();
+
+    bool noRender = (flags & 0x08u) != 0 || ((flags & 0x04u) != 0 && timeWithOffset >= lifetime);
+    if (!noRender) {
+        willAnyRender = true;
+    }
+
+    memoryBarrierShared();
+
+    if (!willAnyRender) {
+        SetMeshOutputsEXT(0, 0);
+        return;
+    }
+
+    if (gl_LocalInvocationIndex == 0) {
+        SetMeshOutputsEXT(VERTEX_COUNT, PRIMITIVE_COUNT);
+    }
+    if (localId.x == 0) {
+        gl_PrimitiveTriangleIndicesEXT[2 * localId.y + 0] = uvec3(0, 1, 2) + gl_LocalInvocationIndex;
+        gl_PrimitiveTriangleIndicesEXT[2 * localId.y + 1] = uvec3(0, 2, 3) + gl_LocalInvocationIndex;
+    }
+
+    if (noRender) {
         gl_MeshVerticesEXT[gl_LocalInvocationIndex].gl_Position = vec4(-1.0, -1.0, -1.0, 1.0);
         outTextures[gl_LocalInvocationIndex] = uint16_t(0);
         return;
     }
 
-    float t = float((flags & 0x02) != 0 ? clamp(timeWithOffset, 0.0, lifetime) : mod(timeWithOffset, lifetime));
+    float t = float((flags & 0x02u) != 0 ? clamp(timeWithOffset, 0.0, lifetime) : mod(timeWithOffset, lifetime));
     vec3 basePos = getParticlePosition(p, t);
     float rotation = float(p.rotation) + t * float(p.rotation_change);
     vec2 basePointOffset = OFFSETS[localId.x];
-    vec2 scale = readVec16_2(p.scale) * (1.0 + t * float(p.scaleChange));
+    vec2 scale = readVec16_2(p.scale) * max(1.0 + t * float(p.scaleChange), 0.0);
     vec2 pointOffset = vec2(
         basePointOffset.x * cos(rotation) + basePointOffset.y * sin(rotation),
         -basePointOffset.x * sin(rotation) + basePointOffset.y * cos(rotation)
     ) * scale;
 
-    vec3 pos = basePos + d.cameraRight.xyz * pointOffset.x + ((flags & 0x01) != 0 ? vec3(0.0, 1.0, 0.0) : d.cameraUp.xyz) * pointOffset.y;
+    vec3 pos = basePos + d.cameraRight.xyz * pointOffset.x + ((flags & 0x01u) != 0 ? vec3(0.0, 1.0, 0.0) : d.cameraUp.xyz) * pointOffset.y;
 
     gl_MeshVerticesEXT[gl_LocalInvocationIndex].gl_Position = d.mvp * vec4(pos, 1.0);
     outUvs[gl_LocalInvocationIndex] = basePointOffset + 0.5;

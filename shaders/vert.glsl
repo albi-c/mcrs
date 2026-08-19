@@ -60,8 +60,8 @@ vec2 getVertexUv(in Vertex vertex) {
 }
 vec3 getVertexNormal(in Vertex vertex) {
     uint n = vertex.n;
-    float nx = float(n & 0x7ff) / 1024.0 - 1.0;
-    float ny = float((n >> 11) & 0x3ff) / 512.0 - 1.0;
+    float nx = float(n & 0x7ffu) / 1024.0 - 1.0;
+    float ny = float((n >> 11) & 0x3ffu) / 512.0 - 1.0;
     float nz = float(n >> 21) / 1024.0 - 1.0;
     // TODO: multiply by inverse of model matrix if doing non uniform transforms
     vec3 normal = normalize(vec3(nx, ny, nz));

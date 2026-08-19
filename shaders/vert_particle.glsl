@@ -60,9 +60,9 @@ const vec2 OFFSETS[6] = vec2[6](
 vec4 readPacked(uint packed) {
     vec4 color = vec4(
         (vec3(
-            float(packed & 0xff),
-            float((packed >> 8) & 0xff),
-            float((packed >> 16) & 0xff)
+            float(packed & 0xffu),
+            float((packed >> 8) & 0xffu),
+            float((packed >> 16) & 0xffu)
         ) / 255.0 - 0.5) * 2.0,
         float(packed >> 24) / 255.0
     );
@@ -115,7 +115,7 @@ void main() {
     ParticleGroup group = d.groups.data[particle.group];
     outTexture = group.tex;
 
-    float rotSpeedVar = float(group.rot_speed_scale_var & 0xff) / 256.0;
+    float rotSpeedVar = float(group.rot_speed_scale_var & uint16_t(0xff)) / 256.0;
     float scaleVar = float(group.rot_speed_scale_var >> 8) / 256.0;
 
     float rotation = hashed.x + particle.lifetime * float(group.rot_speed) * variabilityModifier(rotSpeedVar, hashed.y);
