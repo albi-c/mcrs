@@ -63,7 +63,7 @@ vec3 getVertexNormal(in Vertex vertex) {
     float nx = float(n & 0x7ffu) / 1024.0 - 1.0;
     float ny = float((n >> 11) & 0x3ffu) / 512.0 - 1.0;
     float nz = float(n >> 21) / 1024.0 - 1.0;
-    // TODO: multiply by inverse of model matrix if doing non uniform transforms
+    // TODO: multiply by inverse of model matrix if doing non uniform transforms (e.g. rotation)
     vec3 normal = normalize(vec3(nx, ny, nz));
     return normal;
 }

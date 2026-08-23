@@ -15,6 +15,7 @@ use winit::event::ElementState;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use gpu::{MemoryAllocation, MemoryAllocator};
 use crate::gltf;
+use crate::mesh_model::MeshModels;
 
 const FRAMES_IN_FLIGHT: u64 = 2;
 
@@ -239,7 +240,7 @@ fn compile_shader(glsl: &str, path: &str, stage: gpu::ShaderStage) -> Result<sha
     Ok(compiler.compile_into_spirv(glsl, shader_stage, path, "main", Some(&options))?)
 }
 
-fn load_shader(path: impl AsRef<Path>, stage: gpu::ShaderStage, gpu: &gpu::Gpu) -> Result<gpu::Shader<'_>> {
+pub fn load_shader(path: impl AsRef<Path>, stage: gpu::ShaderStage, gpu: &gpu::Gpu) -> Result<gpu::Shader<'_>> {
     if !Path::new("shader_cache").exists() {
         fs::create_dir("shader_cache")?;
     }
@@ -314,6 +315,8 @@ pub struct Application<'a> {
     particle_groups: gpu::Allocation<'a, ParticleGroup>,
     particles: gpu::Allocation<'a, Particle>,
     mesh_particles: gpu::Allocation<'a, MeshParticle>,
+
+    mesh_models: MeshModels<'a>,
 
     keys: HashMap<PhysicalKey, bool>,
     camera_pos: Vec3,
@@ -397,16 +400,14 @@ impl<'a> Application<'a> {
         let tl_as = create_top_level_as(gpu, &queue, &bl_as)?;
         tl_as.descriptor(&mut accel_struct_descriptors[0]);
 
-        // TODO: shader compilation at runtime, hot reload
-        // TODO: compute queue, compute, texture.view_rw
-        // TODO: conditional rendering
-        // TODO: particles using compute, fluctuating light
+        // TODO: shader hot reload
+        // TODO: texture.view_rw
+        // TODO: fluctuating light
         // TODO: fsr
         // TODO: ray query for shadows
         // TODO: point shadows using multi view
         // TODO: model loading abstraction
-        // TODO: synchronization 2 everywhere
-        // TODO: shader auto build
+        // TODO: imgui
 
         const INTENSITY: f32 = 1.5;
         const COLOR: Vec3A = Vec3A::new(0.85, 0.65, 0.05);
@@ -549,6 +550,8 @@ impl<'a> Application<'a> {
             particles,
             mesh_particles,
 
+            mesh_models: MeshModels::new(gpu)?,
+
             keys: HashMap::new(),
             camera_pos: Vec3::new(0.0, 0.0, 0.0),
             camera_front: Vec3::new(0.0, 0.0, 1.0),
@@ -682,6 +685,7 @@ impl<'a> Application<'a> {
         let mat_view = self.get_view_matrix();
         let mat_model = Mat4::IDENTITY;
         let mat_mvp = mat_perspective * mat_flip * mat_view * mat_model;
+        let mat_vp = mat_perspective * mat_flip * mat_view;
 
         const { assert!(size_of::<Vertex>() == 16) };
 
@@ -708,7 +712,7 @@ impl<'a> Application<'a> {
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
         struct ParticleVertexData(Mat4, Vec3A, Vec3A, gpu::DevicePointer, gpu::DevicePointer);
         let particle_vertex_data = arena.alloc_data(&[ParticleVertexData(
-            mat_perspective * mat_flip * mat_view,
+            mat_vp,
             mat_view.col(0).xyz().to_vec3a(),
             mat_view.col(1).xyz().to_vec3a(),
             self.particles.device(),
@@ -716,18 +720,13 @@ impl<'a> Application<'a> {
         )])?;
 
         let particle_camera_right = Vec3A::new(1.0, 0.0, 0.0).rotate_y(-self.camera_look.x.to_radians());
-        let billboard_spherical = true;
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
         struct ParticleMeshData(Mat4, Vec3A, Vec3A, gpu::DevicePointer, f64);
         let particle_mesh_data = arena.alloc_data(&[ParticleMeshData(
-            mat_perspective * mat_flip * mat_view,
+            mat_vp,
             particle_camera_right,
-            if billboard_spherical {
-                self.camera_front.to_vec3a().cross(particle_camera_right).normalize()
-            } else {
-                Vec3A::Y
-            },
+            self.camera_front.to_vec3a().cross(particle_camera_right).normalize(),
             self.mesh_particles.device(),
             time,
         )])?;
@@ -776,6 +775,9 @@ impl<'a> Application<'a> {
         command_buffer.draw_indexed(
             vertex_data.device(), pixel_data.device(),
             indices.device(), indices.len() as u32, gpu::IndexType::U32);
+
+        self.mesh_models.render(
+            arena, &mut command_buffer, pixel_data.device(), self.gltf.scenes[0].materials.device(), &mat_vp)?;
 
         command_buffer.end_render_pass();
 

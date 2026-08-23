@@ -203,7 +203,8 @@ impl PipelineLayout {
     pub const ALL_GRAPHICS_STAGES: vk::ShaderStageFlags = vk::ShaderStageFlags::from_bits(
         vk::ShaderStageFlags::VERTEX.bits()
             | vk::ShaderStageFlags::FRAGMENT.bits()
-            | vk::ShaderStageFlags::MESH_EXT.bits()).unwrap();
+            | vk::ShaderStageFlags::MESH_EXT.bits()
+            | vk::ShaderStageFlags::TASK_EXT.bits()).unwrap();
     pub const ALL_STAGES: vk::ShaderStageFlags = vk::ShaderStageFlags::from_bits(
         Self::ALL_GRAPHICS_STAGES.bits()
             | vk::ShaderStageFlags::COMPUTE.bits()).unwrap();
@@ -716,7 +717,7 @@ pub fn get_stage(stage: ShaderStage) -> vk::ShaderStageFlags {
 fn get_next_stage(stage: ShaderStage) -> vk::ShaderStageFlags {
     match stage {
         ShaderStage::Vertex | ShaderStage::Mesh | ShaderStage::MeshWithTask => vk::ShaderStageFlags::FRAGMENT,
-        ShaderStage::Task => vk::ShaderStageFlags::TASK_EXT,
+        ShaderStage::Task => vk::ShaderStageFlags::MESH_EXT,
         ShaderStage::Pixel | ShaderStage::Compute => vk::ShaderStageFlags::empty(),
     }
 }

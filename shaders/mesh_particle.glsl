@@ -100,6 +100,8 @@ vec3 getParticlePosition(in Particle p, float t) {
 shared bool willAnyRender;
 
 void main() {
+    // TODO: make shader 1xPARRICLE_COUNT instead of 4xPARTICLE_COUNT to only calculate center position once
+
     MeshData d = data.mesh;
     uvec2 localId = gl_LocalInvocationID.xy;
 

@@ -5,6 +5,7 @@
 mod application;
 mod gltf;
 mod obj;
+mod mesh_model;
 
 use std::cell::Cell;
 use std::collections::HashSet;
