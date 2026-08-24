@@ -29,15 +29,15 @@ struct Meshlet {
     uint _padding[2];
 };
 
-// --- 96 bytes
+// --- 32 bytes
 struct MeshletInfo {
-    mat4 transform;
     AABB aabb;
+    uint transformIndex;
     uint8_t vertexCount;
     uint8_t triangleCount;
     // bit 0: disable rendering, bit 1: disable frustum culling
     uint8_t flags;
-    uint8_t _padding[5];
+    uint8_t _padding[1];
 };
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshDataModelMeshlets {

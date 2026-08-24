@@ -63,12 +63,12 @@ bitflags! {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 struct MeshletInfo {
-    transform: Mat4,
     aabb: AABB,
+    transform_index: u32,
     vertex_count: u8,
     triangle_count: u8,
     flags: MeshletInfoFlags,
-    _padding: [u8; 5],
+    _padding: [u8; 1],
 }
 
 #[repr(transparent)]
@@ -99,11 +99,13 @@ struct MeshData {
     models: gpu::DevicePointer,  // [Model]
     model_indices: gpu::DevicePointer,  // [u32]
     model_transforms: gpu::DevicePointer,  // [Mat4]
+    meshlet_transforms: gpu::DevicePointer,  // [Mat4]
     materials: gpu::DevicePointer,  // [UVec4]
     model_index_offset: u32,
     model_transform_offset: u32,
+    meshlet_transform_offset: u32,
     use_model_index_array: u8,  // bool
-    _padding: [u8; 7],
+    _padding: [u8; 11],
 }
 
 pub struct MeshModels<'a> {
@@ -113,6 +115,7 @@ pub struct MeshModels<'a> {
 
     meshlets: gpu::Allocation<'a, Meshlet>,
     meshlet_infos: gpu::Allocation<'a, MeshletInfo>,
+    meshlet_transforms: gpu::Allocation<'a, Mat4>,
     models: gpu::Allocation<'a, Model>,
     model_transforms: gpu::Allocation<'a, Mat4>,
 }
@@ -178,15 +181,16 @@ impl<'a> MeshModels<'a> {
             MeshletInfo {
                 // TODO: somehow modify model AABB when using meshlet transform to fix top level culling
                 // probably just disable top level culling when meshlet matrix can change
-
-                // TODO: extract to additional array
-                transform: Mat4::IDENTITY,
                 aabb,
+                transform_index: 0,
                 vertex_count: 25,
                 triangle_count: 32,
                 flags: MeshletInfoFlags::empty(),
-                _padding: [0u8; 5],
+                _padding: [0u8; 1],
             },
+        ])?;
+        let meshlet_transforms = gpu.allocator().alloc_data(&[
+            Mat4::IDENTITY,
         ])?;
         let models = gpu.allocator().alloc_data(&[
             Model {
@@ -210,6 +214,7 @@ impl<'a> MeshModels<'a> {
 
             meshlets,
             meshlet_infos,
+            meshlet_transforms,
             models,
             model_transforms,
         })
@@ -224,11 +229,13 @@ impl<'a> MeshModels<'a> {
             models: self.models.device(),
             model_indices: gpu::DevicePointer::null(),
             model_transforms: self.model_transforms.device(),
+            meshlet_transforms: self.meshlet_transforms.device(),
             materials,
             model_index_offset: 0,
             model_transform_offset: 0,
+            meshlet_transform_offset: 0,
             use_model_index_array: 0,
-            _padding: [0u8; 7],
+            _padding: [0u8; 11],
         }])?;
 
         cmd_buf.bind_shaders([&self.shader_task, &self.shader_mesh, &self.shader_frag]);

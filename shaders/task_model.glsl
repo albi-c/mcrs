@@ -42,9 +42,11 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Mes
     MeshDataModels models;
     MeshDataModelIndices modelIndices;
     MeshDataModelTransforms modelTransforms;
+    Pointer meshletTransforms;
     Pointer materials;
     uint modelIndexOffset;
     uint modelTransformOffset;
+    uint meshletTransformOffset;
     bool useModelIndexArray;
 };
 

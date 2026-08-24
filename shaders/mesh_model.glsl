@@ -28,9 +28,11 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Mes
     Pointer models;
     Pointer modelIndices;
     Pointer modelTransforms;
+    MeshDataMeshletTransforms meshletTransforms;
     MeshDataMaterials materials;
     uint modelIndexOffset;
     uint modelTransformOffset;
+    uint meshletTransformOffset;
     bool useModelIndexArray;
 };
 
@@ -71,7 +73,7 @@ void main() {
 
     if (gl_LocalInvocationIndex == 0) {
         isInFrustum = true;
-        modelTransform = IN.model * mi.transform;
+        modelTransform = IN.model * d.meshletTransforms.data[mi.transformIndex + d.meshletTransformOffset];
     }
 
     memoryBarrierShared();
