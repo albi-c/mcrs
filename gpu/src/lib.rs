@@ -524,8 +524,6 @@ pub struct DrawMeshTasksIndirectCommand {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]
 pub struct DevicePointer(vk::DeviceAddress);
 
-// TODO: typed device pointers, possibly even with lifetimes
-
 impl DevicePointer {
     pub fn null() -> Self {
         Self(0)
@@ -553,7 +551,7 @@ unsafe impl Zeroable for DevicePointer {}
 unsafe impl Pod for DevicePointer {}
 
 pub trait MemoryAllocation {
-    type Type: Zeroable;
+    type Type: Pod;
 
     fn host(&self) -> &[Self::Type];
     fn host_mut(&mut self) -> &mut [Self::Type];
@@ -1301,12 +1299,22 @@ impl<'a> CommandBuffer<'a> {
         unsafe { dev.cmd_begin_rendering_khr(self.buffer, &info) };
 
         unsafe {
-            // TODO: use values from desc
-
             dev.cmd_set_stencil_test_enable_ext(self.buffer, false);
-            // TODO: for all attachments
-            dev.cmd_set_color_blend_enable_ext(self.buffer, 0, &[vk::FALSE]);
-            dev.cmd_set_color_write_mask_ext(self.buffer, 0, &[vk::ColorComponentFlags::all()]);
+
+            if let Some(_d) = desc.blend_state {
+                for i in 0..(desc.color_targets.len() as u32) {
+                    dev.cmd_set_color_blend_enable_ext(self.buffer, i, &[vk::TRUE]);
+                }
+                todo!("color blending not implemented")
+            } else {
+                for i in 0..(desc.color_targets.len() as u32) {
+                    dev.cmd_set_color_blend_enable_ext(self.buffer, i, &[vk::FALSE]);
+                }
+            }
+
+            for i in 0..(desc.color_targets.len() as u32) {
+                dev.cmd_set_color_write_mask_ext(self.buffer, i, &[vk::ColorComponentFlags::all()]);
+            }
 
             if let Some(d) = desc.depth_test_state {
                 dev.cmd_set_depth_compare_op_ext(self.buffer, vk::CompareOp::from_raw(d.op as i32));
@@ -1328,6 +1336,7 @@ impl<'a> CommandBuffer<'a> {
                 .height(render_area.extent.height as f32)
                 .min_depth(0.0)
                 .max_depth(1.0);
+            // TODO: maybe should be set for each color target separately?
             dev.cmd_set_viewport_with_count_ext(self.buffer, &[viewport]);
             dev.cmd_set_scissor_with_count_ext(self.buffer, &[render_area]);
             dev.cmd_set_rasterizer_discard_enable_ext(self.buffer, false);

@@ -40,6 +40,7 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Mes
     mat4 viewProj;
     Frustum frustum;
     MeshDataModels models;
+    // TODO: use array of pointers to make dynamically adding and removing models easier
     MeshDataModelIndices modelIndices;
     MeshDataModelTransforms modelTransforms;
     Pointer meshletTransforms;

@@ -19,7 +19,6 @@ use crate::mesh_model::MeshModels;
 
 const FRAMES_IN_FLIGHT: u64 = 2;
 
-// TODO: use u16 instead of f16
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct Vertex(pub [f16; 3], pub u16, pub [f16; 2], pub u32);
@@ -403,6 +402,8 @@ impl<'a> Application<'a> {
         let tl_as = create_top_level_as(gpu, &queue, &bl_as)?;
         tl_as.descriptor(&mut accel_struct_descriptors[0]);
 
+        // TODO: deferred rendering
+        // TODO: OIT
         // TODO: shader hot reload
         // TODO: texture.view_rw
         // TODO: fluctuating light
