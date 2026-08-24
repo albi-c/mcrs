@@ -16,8 +16,6 @@ struct Vertex {
 struct AABB {
     // vec3 center, vec3 extent
     float data[6];
-//    vec3 center;
-//    vec3 extent;
 };
 
 // --- 1536 bytes
@@ -31,7 +29,7 @@ struct Meshlet {
     uint _padding[2];
 };
 
-// --- 48 bytes
+// --- 96 bytes
 struct MeshletInfo {
     mat4 transform;
     AABB aabb;
@@ -58,7 +56,7 @@ struct Task {
 
 struct Frustum {
     // xyz - normal, w - distance
-    vec4 planes[6];
+    vec4 planes[5];
 };
 
 shared bool isInFrustum;
@@ -66,12 +64,10 @@ shared mat4 modelTransform;
 
 // !! shader local size must be at least 6
 // TODO: make workgroup size a multiple of 64 and replace shared variables with arrays (indexed with Y index)
-// e.g. local_size_x = 6, local_size_y = 32
-// shared bool isInFrustum[32];
+// e.g. local_size_x = 5, local_size_y = 64
+// shared bool isInFrustum[64];
 void checkFrustum(in Frustum f, in AABB aabb) {
-    // TODO: fix culling
-
-    if (gl_LocalInvocationIndex >= 6) {
+    if (gl_LocalInvocationIndex >= 5) {
         return;
     }
 
@@ -83,7 +79,7 @@ void checkFrustum(in Frustum f, in AABB aabb) {
         abs(model3[2])
     ) * vec3(aabb.data[3], aabb.data[4], aabb.data[5]);
     vec4 plane = f.planes[gl_LocalInvocationIndex];
-    float dist = dot(plane.xyz, center) * plane.w;
+    float dist = dot(plane.xyz, center) + plane.w;
     float radius = dot(abs(plane.xyz), extent);
     if (dist + radius < 0.0) {
         isInFrustum = false;

@@ -241,6 +241,9 @@ fn compile_shader(glsl: &str, path: &str, stage: gpu::ShaderStage) -> Result<sha
 }
 
 pub fn load_shader(path: impl AsRef<Path>, stage: gpu::ShaderStage, gpu: &gpu::Gpu) -> Result<gpu::Shader<'_>> {
+    // TODO: !! make shaders recompile when changing included files
+    let enable_caching = false;
+
     if !Path::new("shader_cache").exists() {
         fs::create_dir("shader_cache")?;
     }
@@ -250,7 +253,7 @@ pub fn load_shader(path: impl AsRef<Path>, stage: gpu::ShaderStage, gpu: &gpu::G
         hash(path.as_ref()),
         path.as_ref().file_name().ok_or_else(|| anyhow!("shader path has no file name"))?.to_string_lossy());
     let cache_path = Path::new(&cache_path);
-    if cache_path.exists() {
+    if enable_caching && cache_path.exists() {
         let mut file = fs::File::open(cache_path)?;
         let mut hashed = [0u64];
         file.read_exact(bytemuck::cast_slice_mut(&mut hashed))?;
@@ -630,7 +633,7 @@ impl<'a> Application<'a> {
     }
 
     fn get_view_matrix(&self) -> Mat4 {
-        Mat4::look_at_rh(
+        glam::camera::rh::view::look_at_mat4(
             self.camera_pos,
             self.camera_pos + self.camera_front,
             Vec3::Y,
@@ -676,16 +679,15 @@ impl<'a> Application<'a> {
         arena.reset();
 
         let view_size = gpu::SwapchainContext::get_window_size(ctx);
-        let mat_perspective = Mat4::perspective_infinite_rh(
+        let mat_perspective = glam::camera::rh::proj::vulkan::perspective_infinite(
             100.0f32.to_radians(),
             view_size.0 as f32 / view_size.1 as f32,
             0.001f32,
         );
-        let mat_flip = Mat4::from_scale(Vec3::new(1.0, -1.0, 1.0));
         let mat_view = self.get_view_matrix();
         let mat_model = Mat4::IDENTITY;
-        let mat_mvp = mat_perspective * mat_flip * mat_view * mat_model;
-        let mat_vp = mat_perspective * mat_flip * mat_view;
+        let mat_mvp = mat_perspective * mat_view * mat_model;
+        let mat_vp = mat_perspective * mat_view;
 
         const { assert!(size_of::<Vertex>() == 16) };
 
@@ -777,7 +779,8 @@ impl<'a> Application<'a> {
             indices.device(), indices.len() as u32, gpu::IndexType::U32);
 
         self.mesh_models.render(
-            arena, &mut command_buffer, pixel_data.device(), self.gltf.scenes[0].materials.device(), &mat_vp)?;
+            arena, &mut command_buffer, pixel_data.device(),
+            self.gltf.scenes[0].materials.device(), &mat_vp)?;
 
         command_buffer.end_render_pass();
 

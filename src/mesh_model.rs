@@ -1,13 +1,13 @@
 use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec3, Vec4};
 use half::f16;
 use gpu::{MemoryAllocation, MemoryAllocator};
 use crate::application::load_shader;
 
-#[repr(transparent)]
+#[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-struct Frustum([glam::Vec4; 6]);
+struct Frustum([Vec4; 5]);
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
@@ -77,7 +77,7 @@ struct ModelFlags(u32);
 bitflags! {
     impl ModelFlags : u32 {
         const NoRender = 0x01;
-        const NoCulling = 0x02;
+        const EnableCulling = 0x02;
     }
 }
 
@@ -118,17 +118,16 @@ pub struct MeshModels<'a> {
 }
 
 fn get_frustum(view_proj: &Mat4) -> Frustum {
-    let x = view_proj.x_axis;
-    let y = view_proj.y_axis;
-    let z = view_proj.z_axis;
-    let w = view_proj.w_axis;
+    let x = view_proj.row(0);
+    let y = view_proj.row(1);
+    let z = view_proj.row(2);
+    let w = view_proj.row(3);
     Frustum([
         w + x,
         w - x,
         w + y,
         w - y,
         z,
-        w - z,
     ])
 }
 
@@ -177,6 +176,10 @@ impl<'a> MeshModels<'a> {
         ])?;
         let meshlet_infos = gpu.allocator().alloc_data(&[
             MeshletInfo {
+                // TODO: somehow modify model AABB when using meshlet transform to fix top level culling
+                // probably just disable top level culling when meshlet matrix can change
+
+                // TODO: extract to additional array
                 transform: Mat4::IDENTITY,
                 aabb,
                 vertex_count: 25,
@@ -190,12 +193,12 @@ impl<'a> MeshModels<'a> {
                 meshlets: meshlets.device(),
                 meshlet_infos: meshlet_infos.device(),
                 meshlet_count: 1,
-                flags: ModelFlags::NoCulling,
+                flags: ModelFlags::EnableCulling,
                 aabb,
             },
         ])?;
         let model_transforms = gpu.allocator().alloc_data(&[
-            Mat4::IDENTITY,
+            Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0)),
         ])?;
 
         Ok(Self {
@@ -212,8 +215,9 @@ impl<'a> MeshModels<'a> {
         })
     }
 
-    pub fn render(&self, arena: &gpu::Arena<'a>, cmd_buf: &mut gpu::CommandBuffer<'a>, pixel_data: gpu::DevicePointer,
-                  materials: gpu::DevicePointer, view_proj: &Mat4) -> anyhow::Result<()> {
+    pub fn render(&self, arena: &gpu::Arena<'a>, cmd_buf: &mut gpu::CommandBuffer<'a>,
+                  pixel_data: gpu::DevicePointer, materials: gpu::DevicePointer,
+                  view_proj: &Mat4) -> anyhow::Result<()> {
         let mesh_data = arena.alloc_data(&[MeshData {
             view_proj: *view_proj,
             frustum: get_frustum(view_proj),

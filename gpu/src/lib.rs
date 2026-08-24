@@ -524,6 +524,8 @@ pub struct DrawMeshTasksIndirectCommand {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]
 pub struct DevicePointer(vk::DeviceAddress);
 
+// TODO: typed device pointers, possibly even with lifetimes
+
 impl DevicePointer {
     pub fn null() -> Self {
         Self(0)
