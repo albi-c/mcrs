@@ -1,10 +1,12 @@
 #![feature(try_find)]
 #![feature(linked_list_cursors)]
 #![feature(btree_cursors)]
+#![feature(core_intrinsics)]
 
 mod vulkan;
 mod arena;
 pub mod rt;
+mod multi_alloc;
 
 use std::alloc::Layout;
 use std::cell::{Cell, RefCell};
@@ -24,7 +26,8 @@ use vulkanalia_vma::Alloc;
 use crate::vulkan::{create_logical_device, create_semaphore, create_shader, create_swapchain, find_suitable_device, get_cull_mode, get_front_face, get_sample_count_flag, AccelerationStructureInfo, CommandBufferPool, DescriptorSizes, PipelineLayout, PooledCommandBuffer, QueueFamilies, Queues, Swapchain};
 
 pub use vulkan::create_debug_info_callback;
-pub use crate::arena::Arena;
+pub use crate::arena::{Arena, ArenaAllocation};
+pub use crate::multi_alloc::MultiAllocation;
 
 pub const VALIDATION_LAYER: vk::ExtensionName = vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
 
