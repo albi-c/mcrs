@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use std::collections::{HashSet, LinkedList};
 use std::ffi::{c_void, CStr};
 use anyhow::{anyhow, Result};
+use smallvec::{smallvec, SmallVec};
 use vulkanalia::{vk, Device, Instance};
 use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, HasBuilder, InstanceV1_0, InstanceV1_1, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
 use crate::{need_portability_ext, validation_enabled, Cull, Gpu, Queue, Shader, ShaderStage, VALIDATION_LAYER};
@@ -378,10 +379,10 @@ pub fn create_swapchain(instance: &Instance, physical_device: vk::PhysicalDevice
         (support.capabilities.min_image_count + 1).min(support.capabilities.max_image_count)
     };
 
-    let (family_indices, sharing_mode) = if queue_families.graphics != queue_families.present {
-        (vec![queue_families.graphics, queue_families.present], vk::SharingMode::CONCURRENT)
+    let (family_indices, sharing_mode): (SmallVec<[_; 2]>, _) = if queue_families.graphics != queue_families.present {
+        (smallvec![queue_families.graphics, queue_families.present], vk::SharingMode::CONCURRENT)
     } else {
-        (vec![], vk::SharingMode::EXCLUSIVE)
+        (smallvec![], vk::SharingMode::EXCLUSIVE)
     };
 
     let info = vk::SwapchainCreateInfoKHR::builder()
@@ -414,9 +415,9 @@ pub fn create_swapchain(instance: &Instance, physical_device: vk::PhysicalDevice
         swapchain,
         format: surface_format.format,
         extent,
-        images,
-        image_views,
-        present_semaphores,
+        images: images.into_boxed_slice(),
+        image_views: image_views.into_boxed_slice(),
+        present_semaphores: present_semaphores.into_boxed_slice(),
         image_index: 0,
     })
 }
@@ -512,19 +513,19 @@ pub struct Swapchain {
     pub swapchain: vk::SwapchainKHR,
     pub format: vk::Format,
     pub extent: vk::Extent2D,
-    pub images: Vec<vk::Image>,
-    pub image_views: Vec<vk::ImageView>,
-    pub present_semaphores: Vec<vk::Semaphore>,
+    pub images: Box<[vk::Image]>,
+    pub image_views: Box<[vk::ImageView]>,
+    pub present_semaphores: Box<[vk::Semaphore]>,
     pub image_index: usize,
 }
 
 impl Swapchain {
     pub unsafe fn destroy(&mut self, device: &Device) {
         unsafe {
-            for view in self.image_views.drain(..) {
+            for view in std::mem::take(&mut self.image_views) {
                 device.destroy_image_view(view, None);
             }
-            for sem in self.present_semaphores.drain(..) {
+            for sem in std::mem::take(&mut self.present_semaphores) {
                 device.destroy_semaphore(sem, None);
             }
             device.destroy_swapchain_khr(self.swapchain, None);
@@ -576,10 +577,10 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         })
         .collect::<Vec<_>>();
 
-    let layers = if validation_enabled() {
-        vec![VALIDATION_LAYER.as_ptr()]
+    let layers: SmallVec<[_; 1]> = if validation_enabled() {
+        smallvec![VALIDATION_LAYER.as_ptr()]
     } else {
-        vec![]
+        smallvec![]
     };
 
     let mut extensions = EXTENSION_REQUIREMENTS

@@ -22,6 +22,7 @@ use std::ops::{Bound, Index, IndexMut};
 use anyhow::Result;
 use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
+use smallvec::{smallvec, SmallVec};
 use smart_default::SmartDefault;
 use vulkanalia::{vk, Device, Instance, Version};
 use vulkanalia::vk::{DeviceV1_0, DeviceV1_2, DeviceV1_3, ExtDescriptorBufferExtensionDeviceCommands, ExtDeviceFaultExtensionDeviceCommands, ExtMeshShaderExtensionDeviceCommands, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrBufferDeviceAddressExtensionDeviceCommands, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrSynchronization2ExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
@@ -911,11 +912,11 @@ impl<'a> Queue<'a> {
                     let mut count = vk::DeviceFaultCountsEXT::default();
                     unsafe { gpu.device.get_device_fault_info_ext(&mut count, None)
                         .expect("failed to get device fault info") };
-                    let mut address_infos =
-                        vec![vk::DeviceFaultAddressInfoEXT::default(); count.address_info_count as usize];
-                    let mut vendor_infos =
-                        vec![vk::DeviceFaultVendorInfoEXT::default(); count.vendor_info_count as usize];
-                    let mut vendor_data = vec![0u8; count.vendor_binary_size as usize];
+                    let mut address_infos: SmallVec<[_; 4]> =
+                        smallvec![vk::DeviceFaultAddressInfoEXT::default(); count.address_info_count as usize];
+                    let mut vendor_infos: SmallVec<[_; 4]> =
+                        smallvec![vk::DeviceFaultVendorInfoEXT::default(); count.vendor_info_count as usize];
+                    let mut vendor_data: SmallVec<[_; 4]> = smallvec![0u8; count.vendor_binary_size as usize];
                     let mut info = vk::DeviceFaultInfoEXT::builder()
                         .address_infos(unsafe { &mut *address_infos.as_mut_ptr() })
                         .vendor_infos(unsafe { &mut *vendor_infos.as_mut_ptr() })
@@ -1287,7 +1288,7 @@ impl<'a> CommandBuffer<'a> {
 
         let color_attachments = desc.color_targets.iter()
             .map(Self::create_attachment)
-            .collect::<Vec<_>>();
+            .collect::<SmallVec<[_; 8]>>();
         let depth_attachment;
         let stencil_attachment;
         let mut info = vk::RenderingInfoKHR::builder()

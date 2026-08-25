@@ -10,6 +10,7 @@ mod mesh_model;
 use std::cell::Cell;
 use std::collections::HashSet;
 use anyhow::{anyhow, Result};
+use smallvec::{smallvec, SmallVec};
 use vulkanalia::{vk, Entry, Instance};
 use vulkanalia::loader::{LibloadingLoader, LIBRARY};
 use vulkanalia::vk::{EntryV1_0, ExtDebugUtilsExtensionInstanceCommands, HasBuilder, InstanceV1_0};
@@ -57,10 +58,10 @@ fn create_instance(window: &Window, entry: &Entry) -> Result<(Instance, Option<v
         return Err(anyhow!("validation layer not supported"));
     }
 
-    let (layers, mut debug_info) = if gpu::validation_enabled() {
-        (vec![gpu::VALIDATION_LAYER.as_ptr()], Some(gpu::create_debug_info_callback()))
+    let (layers, mut debug_info): (SmallVec<[_; 1]>, _) = if gpu::validation_enabled() {
+        (smallvec![gpu::VALIDATION_LAYER.as_ptr()], Some(gpu::create_debug_info_callback()))
     } else {
-        (vec![], None)
+        (smallvec![], None)
     };
 
     let mut info = vk::InstanceCreateInfo::builder()

@@ -407,6 +407,8 @@ impl<'a> Application<'a> {
         // TODO: extract this crate as game engine
 
         // TODO: move from vulkanalia to ash to make use of imgui ash backend
+        // TODO: render graph, automatic creation of screen sized textures
+        // TODO: deferred deallocation (will run after FRAMES_IN_FLIGHT + 1 frames)
         // TODO: deferred rendering (output material id to texture and do texture sampling in post)
         // TODO: HDR, bloom and other post effects
         // TODO: OIT
@@ -420,6 +422,8 @@ impl<'a> Application<'a> {
         // TODO: imgui
         // TODO: game gui framework
         // TODO: physics
+        // TODO: config system
+        // TODO: keyboard/mouse input system
 
         const INTENSITY: f32 = 1.5;
         const COLOR: Vec3A = Vec3A::new(0.85, 0.65, 0.05);

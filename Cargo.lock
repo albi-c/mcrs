@@ -1420,6 +1420,7 @@ dependencies = [
  "bitflags 2.13.1",
  "bytemuck",
  "log",
+ "smallvec",
  "smart-default",
  "vulkanalia",
  "vulkanalia-vma",
