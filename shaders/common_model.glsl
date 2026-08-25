@@ -2,6 +2,7 @@
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_ballot : require
 
+// TODO: maybe remove normal data and calculate in mesh shader along with tangent vectors to simplify normal mapping and remove approximate derivative calls in fragment shader
 // --- 16 bytes, possible to extend to 24 to make Meshlet 2k in size
 struct Vertex {
     float16_t pos[3];

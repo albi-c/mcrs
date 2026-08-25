@@ -92,13 +92,14 @@ bitflags! {
         const StopOnEnd = 0x02;
         const HideOnEnd = 0x04;
         const NoRender = 0x08;
+        const HideBeforeStart = 0x10;
     }
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 struct MeshParticle {
-    pub time_offset: f64,
+    pub time_start: f64,
     pub origin: [f16; 3],
     pub velocity: [f16; 3],
     pub acceleration: [f16; 3],
@@ -402,7 +403,12 @@ impl<'a> Application<'a> {
         let tl_as = create_top_level_as(gpu, &queue, &bl_as)?;
         tl_as.descriptor(&mut accel_struct_descriptors[0]);
 
-        // TODO: deferred rendering
+        // TODO: extract and refactor gpu crate to use (reference counting - maybe?) and proper lifetimes
+        // TODO: extract this crate as game engine
+
+        // TODO: move from vulkanalia to ash to make use of imgui ash backend
+        // TODO: deferred rendering (output material id to texture and do texture sampling in post)
+        // TODO: HDR, bloom and other post effects
         // TODO: OIT
         // TODO: shader hot reload
         // TODO: texture.view_rw
@@ -412,6 +418,8 @@ impl<'a> Application<'a> {
         // TODO: point shadows using multi view
         // TODO: model loading abstraction
         // TODO: imgui
+        // TODO: game gui framework
+        // TODO: physics
 
         const INTENSITY: f32 = 1.5;
         const COLOR: Vec3A = Vec3A::new(0.85, 0.65, 0.05);
@@ -487,7 +495,7 @@ impl<'a> Application<'a> {
                     let vel = xyz.to_array().map(f16::from_f32);
                     let acc = xyz.to_array().map(|x| f16::from_f32(x * -1.0));
                     mesh_particles.host_mut()[mesh_particles_idx] = MeshParticle {
-                        time_offset: mesh_particles_idx as f64 * 0.0,
+                        time_start: (mesh_particles_idx as f64) * 0.37,
                         origin: [f16::ZERO, f16::from_f32(2.0), f16::ZERO],
                         velocity: vel,
                         acceleration: acc,
@@ -504,7 +512,7 @@ impl<'a> Application<'a> {
                         tex: 1,
                         color: [0xff; 3],
                         flags: MeshParticleFlags::empty(),
-                        _padding: [0; 3],
+                        _padding: [0u16; 3],
                     };
                     mesh_particles_idx += 1;
                 }

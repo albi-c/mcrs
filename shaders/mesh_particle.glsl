@@ -17,7 +17,7 @@ layout(location = 1) flat out uint16_t outTextures[];
 layout(location = 2) out vec3 outColors[];
 
 struct Particle {
-    double timeOffset;
+    double timeStart;
     float16_t origin[3];
     float16_t velocity[3];
     float16_t acceleration[3];
@@ -33,7 +33,7 @@ struct Particle {
     float16_t lifetime;
     uint16_t tex;
     uint8_t color[3];
-    // bit 0: enable cylindrical billboarding, bit 1: stop on end, bit 2: hide on end, bit 3: no render
+    // bit 0: enable cylindrical billboarding, bit 1: stop on end, bit 2: hide on end, bit 3: no render, bit 4: hide before start
     uint8_t flags;
     uint16_t _padding[3];
 };
@@ -101,6 +101,8 @@ shared bool willAnyRender;
 
 void main() {
     // TODO: make shader 1xPARRICLE_COUNT instead of 4xPARTICLE_COUNT to only calculate center position once
+    // TODO: add task shader to invoke this one on different input data pointers
+    // TODO: add scale and acceleration change start time thresholds - fade out only at end of lifetime
 
     MeshData d = data.mesh;
     uvec2 localId = gl_LocalInvocationID.xy;
@@ -108,14 +110,14 @@ void main() {
     Particle p = d.particles.data[PARTICLE_COUNT * gl_WorkGroupID.x + localId.y];
     uint flags = uint(p.flags);
 
-    double timeWithOffset = d.time + double(p.timeOffset);
+    double timeWithOffset = d.time - p.timeStart;
     double lifetime = double(p.lifetime);
 
     willAnyRender = false;
 
     memoryBarrierShared();
 
-    bool noRender = (flags & 0x08u) != 0 || ((flags & 0x04u) != 0 && timeWithOffset >= lifetime);
+    bool noRender = (flags & 0x08u) != 0 || ((flags & 0x10u) != 0 && timeWithOffset < 0.0) || ((flags & 0x04u) != 0 && timeWithOffset >= lifetime);
     if (!noRender) {
         willAnyRender = true;
     }
