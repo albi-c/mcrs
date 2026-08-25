@@ -13,10 +13,6 @@ layout(location = 3) out vec3 outWorldPositions[];
 
 taskPayloadSharedEXT Task IN;
 
-layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshDataMeshletTransforms {
-    mat4 data[];
-};
-
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshDataMaterials {
     // Material described in vert.glsl
     uvec4 data[];
@@ -26,14 +22,7 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Mes
     mat4 viewProj;
     Frustum frustum;
     Pointer models;
-    Pointer modelIndices;
-    Pointer modelTransforms;
-    MeshDataMeshletTransforms meshletTransforms;
     MeshDataMaterials materials;
-    uint modelIndexOffset;
-    uint modelTransformOffset;
-    uint meshletTransformOffset;
-    bool useModelIndexArray;
 };
 
 layout(std430, push_constant) uniform Data {
@@ -73,7 +62,7 @@ void main() {
 
     if (gl_LocalInvocationIndex == 0) {
         isInFrustum = true;
-        modelTransform = IN.model * d.meshletTransforms.data[mi.transformIndex + d.meshletTransformOffset];
+        modelTransform = IN.model * mi.transform.transform;
     }
 
     memoryBarrierShared();

@@ -19,6 +19,21 @@ struct AABB {
     float data[6];
 };
 
+layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshDataTransform {
+    mat4 transform;
+};
+
+// --- 48 bytes
+struct MeshletInfo {
+    AABB aabb;
+    MeshDataTransform transform;
+    uint8_t vertexCount;
+    uint8_t triangleCount;
+    // bit 0: disable rendering, bit 1: disable frustum culling
+    uint8_t flags;
+    uint8_t _padding[13];
+};
+
 // --- 1536 bytes
 struct Meshlet {
     // --- 1024 bytes
@@ -28,17 +43,6 @@ struct Meshlet {
     // packed: each uint: 0..8 - idx 1, 8..16 - idx 3, 16..24 - idx 3
     uint triangles[126];
     uint _padding[2];
-};
-
-// --- 32 bytes
-struct MeshletInfo {
-    AABB aabb;
-    uint transformIndex;
-    uint8_t vertexCount;
-    uint8_t triangleCount;
-    // bit 0: disable rendering, bit 1: disable frustum culling
-    uint8_t flags;
-    uint8_t _padding[1];
 };
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshDataModelMeshlets {

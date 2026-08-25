@@ -64,11 +64,11 @@ bitflags! {
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 struct MeshletInfo {
     aabb: AABB,
-    transform_index: u32,
+    transform: gpu::DevicePointer,  // Mat4
     vertex_count: u8,
     triangle_count: u8,
     flags: MeshletInfoFlags,
-    _padding: [u8; 1],
+    _padding: [u8; 13],
 }
 
 #[repr(transparent)]
@@ -86,9 +86,11 @@ bitflags! {
 struct Model {
     meshlets: gpu::DevicePointer,  // [Meshlet]
     meshlet_infos: gpu::DevicePointer,  // [MeshletInfo]
+    transform: gpu::DevicePointer,  // Mat4
     meshlet_count: u32,
     flags: ModelFlags,
     aabb: AABB,
+    _padding: [u32; 2],
 }
 
 #[repr(C)]
@@ -96,16 +98,8 @@ struct Model {
 struct MeshData {
     view_proj: Mat4,
     frustum: Frustum,
-    models: gpu::DevicePointer,  // [Model]
-    model_indices: gpu::DevicePointer,  // [u32]
-    model_transforms: gpu::DevicePointer,  // [Mat4]
-    meshlet_transforms: gpu::DevicePointer,  // [Mat4]
+    models_pointers: gpu::DevicePointer,  // [*Model]
     materials: gpu::DevicePointer,  // [UVec4]
-    model_index_offset: u32,
-    model_transform_offset: u32,
-    meshlet_transform_offset: u32,
-    use_model_index_array: u8,  // bool
-    _padding: [u8; 11],
 }
 
 pub struct MeshModels<'a> {
@@ -113,9 +107,9 @@ pub struct MeshModels<'a> {
     shader_mesh: gpu::Shader<'a>,
     shader_frag: gpu::Shader<'a>,
 
-    meshlets: gpu::Allocation<'a, Meshlet>,
-    meshlet_infos: gpu::Allocation<'a, MeshletInfo>,
     meshlet_transforms: gpu::Allocation<'a, Mat4>,
+    meshlet_infos: gpu::Allocation<'a, MeshletInfo>,
+    meshlets: gpu::Allocation<'a, Meshlet>,
     models: gpu::Allocation<'a, Model>,
     model_transforms: gpu::Allocation<'a, Mat4>,
 }
@@ -170,6 +164,21 @@ impl<'a> MeshModels<'a> {
             }
         }
 
+        let meshlet_transforms = gpu.allocator().alloc_data(&[
+            Mat4::IDENTITY,
+        ])?;
+        let meshlet_infos = gpu.allocator().alloc_data(&[
+            MeshletInfo {
+                // TODO: somehow modify model AABB when using meshlet transform to fix top level culling
+                // probably just disable top level culling when meshlet matrix can change
+                aabb,
+                transform: meshlet_transforms.device().add_typed::<Mat4>(0),
+                vertex_count: 25,
+                triangle_count: 32,
+                flags: MeshletInfoFlags::empty(),
+                _padding: [0u8; 13],
+            },
+        ])?;
         let meshlets = gpu.allocator().alloc_data(&[
             Meshlet {
                 vertices,
@@ -177,33 +186,22 @@ impl<'a> MeshModels<'a> {
                 _padding: [0u32; 2],
             }
         ])?;
-        let meshlet_infos = gpu.allocator().alloc_data(&[
-            MeshletInfo {
-                // TODO: somehow modify model AABB when using meshlet transform to fix top level culling
-                // probably just disable top level culling when meshlet matrix can change
-                aabb,
-                transform_index: 0,
-                vertex_count: 25,
-                triangle_count: 32,
-                flags: MeshletInfoFlags::empty(),
-                _padding: [0u8; 1],
-            },
-        ])?;
-        let meshlet_transforms = gpu.allocator().alloc_data(&[
-            Mat4::IDENTITY,
+        let model_transforms = gpu.allocator().alloc_data(&[
+            Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0)),
         ])?;
         let models = gpu.allocator().alloc_data(&[
             Model {
                 meshlets: meshlets.device(),
                 meshlet_infos: meshlet_infos.device(),
+                transform: model_transforms.device().add_typed::<Mat4>(0),
                 meshlet_count: 1,
                 flags: ModelFlags::EnableCulling,
                 aabb,
+                _padding: [0u32; 2],
             },
         ])?;
-        let model_transforms = gpu.allocator().alloc_data(&[
-            Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0)),
-        ])?;
+
+        // TODO: instead of many small allocations, put data for one model into one large allocation
 
         Ok(Self {
             shader_task: load_shader("shaders/task_model.glsl", gpu::ShaderStage::Task, gpu)?,
@@ -212,30 +210,26 @@ impl<'a> MeshModels<'a> {
             // shader_frag: load_shader("shaders/frag.glsl", gpu::ShaderStage::Pixel, gpu)?,
             shader_frag: load_shader("shaders/frag_dummy.glsl", gpu::ShaderStage::Pixel, gpu)?,
 
-            meshlets,
-            meshlet_infos,
             meshlet_transforms,
-            models,
+            meshlet_infos,
+            meshlets,
             model_transforms,
+            models,
         })
     }
 
     pub fn render(&self, arena: &gpu::Arena<'a>, cmd_buf: &mut gpu::CommandBuffer<'a>,
                   pixel_data: gpu::DevicePointer, materials: gpu::DevicePointer,
                   view_proj: &Mat4) -> anyhow::Result<()> {
+        let model_pointers = arena.alloc_data(&[
+            self.models.device().add_typed::<Model>(0),
+        ])?;
+
         let mesh_data = arena.alloc_data(&[MeshData {
             view_proj: *view_proj,
             frustum: get_frustum(view_proj),
-            models: self.models.device(),
-            model_indices: gpu::DevicePointer::null(),
-            model_transforms: self.model_transforms.device(),
-            meshlet_transforms: self.meshlet_transforms.device(),
+            models_pointers: model_pointers.device(),
             materials,
-            model_index_offset: 0,
-            model_transform_offset: 0,
-            meshlet_transform_offset: 0,
-            use_model_index_array: 0,
-            _padding: [0u8; 11],
         }])?;
 
         cmd_buf.bind_shaders([&self.shader_task, &self.shader_mesh, &self.shader_frag]);

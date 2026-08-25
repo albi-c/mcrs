@@ -539,6 +539,9 @@ impl DevicePointer {
     pub fn add(self, offset: usize) -> DevicePointer {
         DevicePointer(self.0 + vk::DeviceAddress::try_from(offset).expect("offset too large"))
     }
+    pub fn add_typed<T: Pod>(self, count: usize) -> DevicePointer {
+        self.add(count * size_of::<T>())
+    }
 }
 
 impl From<DevicePointer> for u64 {

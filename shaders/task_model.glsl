@@ -10,45 +10,31 @@ layout(local_size_x = 6, local_size_y = 1, local_size_z = 1) in;
 
 taskPayloadSharedEXT Task OUT;
 
+// --- 64 bytes
 struct Model {
     MeshDataModelMeshlets meshlets;
     MeshDataModelMeshletInfos meshletInfos;
+    MeshDataTransform transform;
     uint meshletCount;
     // bit 0: disable rendering, bit 1: disable frustum culling
     uint flags;
     AABB aabb;
+    uint _padding[2];
 };
 
-layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshDataModels {
-    Model data[];
+layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshDataModel {
+    Model model;
 };
 
-layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshDataMaterials {
-    // Material described in vert.glsl
-    uvec4 data[];
-};
-
-layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshDataModelTransforms {
-    mat4 data[];
-};
-
-layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshDataModelIndices {
-    uint data[];
+layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshDataModelPointers {
+    MeshDataModel data[];
 };
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshData {
     mat4 viewProj;
     Frustum frustum;
-    MeshDataModels models;
-    // TODO: use array of pointers to make dynamically adding and removing models easier
-    MeshDataModelIndices modelIndices;
-    MeshDataModelTransforms modelTransforms;
-    Pointer meshletTransforms;
+    MeshDataModelPointers modelPointers;
     Pointer materials;
-    uint modelIndexOffset;
-    uint modelTransformOffset;
-    uint meshletTransformOffset;
-    bool useModelIndexArray;
 };
 
 layout(std430, push_constant) uniform Data {
@@ -58,15 +44,7 @@ layout(std430, push_constant) uniform Data {
 
 void main() {
     MeshData d = data.mesh;
-    uint modelIndex;
-    if (subgroupElect()) {
-        if (d.useModelIndexArray) {
-            modelIndex = d.modelIndices.data[gl_WorkGroupID.x] + d.modelIndexOffset;
-        } else {
-            modelIndex = gl_WorkGroupID.x + d.modelIndexOffset;
-        }
-    }
-    Model m = d.models.data[subgroupBroadcastFirst(modelIndex)];
+    Model m = d.modelPointers.data[gl_WorkGroupID.x].model;
 
     if ((m.flags & 0x01) != 0) {
         EmitMeshTasksEXT(0, 0, 0);
@@ -75,12 +53,12 @@ void main() {
 
     if (gl_LocalInvocationIndex == 0) {
         isInFrustum = true;
-        modelTransform = d.modelTransforms.data[gl_WorkGroupID.x + d.modelTransformOffset];
+        modelTransform = m.transform.transform;
     }
 
     memoryBarrierShared();
 
-    if ((m.flags & 0x02) == 0) {
+    if ((m.flags & 0x02) != 0) {
         checkFrustum(d.frustum, m.aabb);
 
         memoryBarrierShared();
