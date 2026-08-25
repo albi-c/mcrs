@@ -2,6 +2,7 @@ use std::alloc::Layout;
 use std::any::TypeId;
 use std::intrinsics::type_id_eq;
 use std::marker::PhantomData;
+use std::ops::{Index, IndexMut};
 use bytemuck::Pod;
 use crate::{Allocation, DevicePointer, Gpu, Memory, MemoryAllocation};
 
@@ -12,6 +13,7 @@ pub trait MultiType {
     const ALIGNS: &'static [usize];
     const TYPES: &'static [TypeId];
 
+    type Array<T: Default>: Default + Index<usize, Output = T> + IndexMut<usize, Output = T>;
     type DevicePtrs;
     type UntypedPtrs;
     type Ptrs;
@@ -31,6 +33,7 @@ impl<A: Pod, B: Pod> MultiType for (A, B) {
     const ALIGNS: &'static [usize] = &[align_of::<A>(), align_of::<B>()];
     const TYPES: &'static [TypeId] = &[TypeId::of::<A>(), TypeId::of::<B>()];
 
+    type Array<T: Default> = [T; 2];
     type DevicePtrs = [DevicePointer; 2];
     type UntypedPtrs = [*mut u8; 2];
     type Ptrs = (*mut A, *mut B);
@@ -56,7 +59,7 @@ impl<A: Pod, B: Pod> MultiType for (A, B) {
 
 pub struct MultiAllocation<'a, T: ?Sized + MultiType> {
     allocation: Allocation<'a, u8>,
-    offsets_counts: Box<[(usize, usize)]>,
+    offsets_counts: T::Array<(usize, usize)>,
     pd: PhantomData<T>,
 }
 
@@ -70,7 +73,7 @@ impl<'a, T: MultiType> MultiAllocation<'a, T> {
         assert_eq!(counts.len(), T::N, "number of element counts must match type count");
 
         let mut layout = Layout::new::<()>();
-        let mut offsets_counts = vec![(0, 0); T::N].into_boxed_slice();
+        let mut offsets_counts = T::Array::<(usize, usize)>::default();
 
         for i in 0..T::N {
             let size = T::SIZES[i];
