@@ -5,7 +5,7 @@ edition = "2024"
 
 [workspace]
 resolver = "3"
-members = ["gpu"]
+members = ["gpu", "macros"]
 
 [workspace.dependencies]
 bytemuck = "1.25.2"
@@ -23,6 +23,7 @@ bitflags = "2.10.0"
 
 [dependencies]
 gpu = { path = "gpu" }
+macros = { path = "macros" }
 winit = { version = "0.29.15", default-features = false, features = ["rwh_06", "x11"] }
 anyhow = { workspace = true }
 vulkanalia = { workspace = true, features = ["libloading", "window"] }

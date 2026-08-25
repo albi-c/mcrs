@@ -3,6 +3,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
 use half::f16;
 use gpu::{MemoryAllocation, MemoryAllocator};
+use macros::multi_allocation;
 use crate::application::load_shader;
 
 #[repr(C)]
@@ -99,14 +100,21 @@ struct MeshData {
     materials: gpu::DevicePointer,  // [UVec4]
 }
 
-type MultiAlloc = (Mat4, MeshletInfo, Meshlet, Mat4, Model);
+#[multi_allocation]
+struct MultiAlloc {
+    meshlet_transforms: Mat4,
+    meshlet_infos: MeshletInfo,
+    meshlets: Meshlet,
+    model_transforms: Mat4,
+    models: Model,
+}
 
 pub struct MeshModels<'a> {
     shader_task: gpu::Shader<'a>,
     shader_mesh: gpu::Shader<'a>,
     shader_frag: gpu::Shader<'a>,
 
-    multi_alloc: gpu::MultiAllocation<'a, MultiAlloc>,
+    alloc: MultiAlloc<'a>,
 }
 
 fn get_frustum(view_proj: &Mat4) -> Frustum {
@@ -159,44 +167,40 @@ impl<'a> MeshModels<'a> {
             }
         }
 
-        let mut multi_alloc = gpu::MultiAllocation::<MultiAlloc>::new(gpu, [1, 1, 1, 1, 1])?;
-        let device_ptrs = multi_alloc.device_n();
-        let (
-            meshlet_transforms,
-            meshlet_infos,
-            meshlets,
-            model_transforms,
-            models,
-        ) = multi_alloc.host_mut_n();
+        let mut alloc = MultiAlloc::new(gpu, MultiAllocCounts {
+            meshlet_transforms: 1,
+            meshlet_infos: 1,
+            meshlets: 1,
+            model_transforms: 1,
+            models: 1,
+        })?;
 
-        meshlet_transforms[0] = Mat4::IDENTITY;
-        meshlet_infos[0] = MeshletInfo {
+        alloc.meshlet_transforms.host_mut()[0] = Mat4::IDENTITY;
+        alloc.meshlet_infos.host_mut()[0] = MeshletInfo {
             // TODO: somehow modify model AABB when using meshlet transform to fix top level culling
             // probably just disable top level culling when meshlet matrix can change
             aabb,
-            transform: device_ptrs[0].add_typed::<Mat4>(0),
+            transform: alloc.meshlet_transforms.device().add_typed::<Mat4>(0),
             vertex_count: 25,
             triangle_count: 32,
             flags: MeshletInfoFlags::empty(),
             _padding: [0u8; 13],
         };
-        meshlets[0] = Meshlet {
+        alloc.meshlets.host_mut()[0] = Meshlet {
             vertices,
             triangles,
             _padding: [0u32; 2],
         };
-        model_transforms[0] = Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0));
-        models[0] = Model {
-            meshlets: device_ptrs[2],
-            meshlet_infos: device_ptrs[1],
-            transform: device_ptrs[3].add_typed::<Mat4>(0),
+        alloc.model_transforms.host_mut()[0] = Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0));
+        alloc.models.host_mut()[0] = Model {
+            meshlets: alloc.meshlets.device(),
+            meshlet_infos: alloc.meshlet_infos.device(),
+            transform: alloc.model_transforms.device().add_typed::<Mat4>(0),
             meshlet_count: 1,
             flags: ModelFlags::EnableCulling,
             aabb,
             _padding: [0u32; 2],
         };
-
-        println!("{:#?}", multi_alloc);
 
         Ok(Self {
             shader_task: load_shader("shaders/task_model.glsl", gpu::ShaderStage::Task, gpu)?,
@@ -205,17 +209,15 @@ impl<'a> MeshModels<'a> {
             // shader_frag: load_shader("shaders/frag.glsl", gpu::ShaderStage::Pixel, gpu)?,
             shader_frag: load_shader("shaders/frag_dummy.glsl", gpu::ShaderStage::Pixel, gpu)?,
 
-            multi_alloc,
+            alloc,
         })
     }
 
     pub fn render(&self, arena: &gpu::Arena<'a>, cmd_buf: &mut gpu::CommandBuffer<'a>,
                   pixel_data: gpu::DevicePointer, materials: gpu::DevicePointer,
                   view_proj: &Mat4) -> anyhow::Result<()> {
-        let models = self.multi_alloc.part::<4, Model>();
-
         let model_pointers = arena.alloc_data(&[
-            models.device().add_typed::<Model>(0),
+            self.alloc.models.device().add_typed::<Model>(0),
         ])?;
 
         let mesh_data = arena.alloc_data(&[MeshData {
@@ -227,7 +229,7 @@ impl<'a> MeshModels<'a> {
 
         cmd_buf.bind_shaders([&self.shader_task, &self.shader_mesh, &self.shader_frag]);
         cmd_buf.draw_meshlets(
-            mesh_data.device(), pixel_data, (models.len() as u32, 1, 1));
+            mesh_data.device(), pixel_data, (self.alloc.models.len() as u32, 1, 1));
 
         Ok(())
     }

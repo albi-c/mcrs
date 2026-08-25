@@ -31,7 +31,7 @@ use crate::vulkan::{create_logical_device, create_semaphore, create_shader, crea
 
 pub use vulkan::create_debug_info_callback;
 pub use crate::arena::{Arena, ArenaAllocation};
-pub use crate::multi_alloc::{MultiAllocation, MultiType};
+pub use crate::multi_alloc::{MultiAllocation, MultiType, MultiAllocationPart};
 
 pub const VALIDATION_LAYER: vk::ExtensionName = vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
 

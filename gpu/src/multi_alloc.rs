@@ -62,24 +62,68 @@ macro_rules! multi_type_for_tuple {
     };
 }
 
-multi_type_for_tuple!(1; 0, A);
-multi_type_for_tuple!(2; 0, A, 1, B);
-multi_type_for_tuple!(3; 0, A, 1, B, 2, C);
-multi_type_for_tuple!(4; 0, A, 1, B, 2, C, 3, D);
-multi_type_for_tuple!(5; 0, A, 1, B, 2, C, 3, D, 4, E);
-multi_type_for_tuple!(6; 0, A, 1, B, 2, C, 3, D, 4, E, 5, F);
-multi_type_for_tuple!(7; 0, A, 1, B, 2, C, 3, D, 4, E, 5, F, 6, G);
-multi_type_for_tuple!(8; 0, A, 1, B, 2, C, 3, D, 4, E, 5, F, 6, G, 7, H);
-multi_type_for_tuple!(9; 0, A, 1, B, 2, C, 3, D, 4, E, 5, F, 6, G, 7, H, 8, I);
+multi_type_for_tuple!( 1; 0, A);
+multi_type_for_tuple!( 2; 0, A, 1, B);
+multi_type_for_tuple!( 3; 0, A, 1, B, 2, C);
+multi_type_for_tuple!( 4; 0, A, 1, B, 2, C, 3, D);
+multi_type_for_tuple!( 5; 0, A, 1, B, 2, C, 3, D, 4, E);
+multi_type_for_tuple!( 6; 0, A, 1, B, 2, C, 3, D, 4, E, 5, F);
+multi_type_for_tuple!( 7; 0, A, 1, B, 2, C, 3, D, 4, E, 5, F, 6, G);
+multi_type_for_tuple!( 8; 0, A, 1, B, 2, C, 3, D, 4, E, 5, F, 6, G, 7, H);
+multi_type_for_tuple!( 9; 0, A, 1, B, 2, C, 3, D, 4, E, 5, F, 6, G, 7, H, 8, I);
 multi_type_for_tuple!(10; 0, A, 1, B, 2, C, 3, D, 4, E, 5, F, 6, G, 7, H, 8, I, 9, J);
 multi_type_for_tuple!(11; 0, A, 1, B, 2, C, 3, D, 4, E, 5, F, 6, G, 7, H, 8, I, 9, J, 10, K);
 multi_type_for_tuple!(12; 0, A, 1, B, 2, C, 3, D, 4, E, 5, F, 6, G, 7, H, 8, I, 9, J, 10, K, 11, L);
+multi_type_for_tuple!(13; 0, A, 1, B, 2, C, 3, D, 4, E, 5, F, 6, G, 7, H, 8, I, 9, J, 10, K, 11, L, 12, M);
+multi_type_for_tuple!(14; 0, A, 1, B, 2, C, 3, D, 4, E, 5, F, 6, G, 7, H, 8, I, 9, J, 10, K, 11, L, 12, M, 13, N);
+multi_type_for_tuple!(15; 0, A, 1, B, 2, C, 3, D, 4, E, 5, F, 6, G, 7, H, 8, I, 9, J, 10, K, 11, L, 12, M, 13, N, 14, O);
+multi_type_for_tuple!(16; 0, A, 1, B, 2, C, 3, D, 4, E, 5, F, 6, G, 7, H, 8, I, 9, J, 10, K, 11, L, 12, M, 13, N, 14, O, 15, P);
+
+struct MultiAllocationContainer<'a> {
+    ma: Allocation<'a, u8>,
+    pub part1: MultiAllocationPart<'a, usize>,
+    pub part2: MultiAllocationPart<'a, usize>,
+}
+
+impl<'a> MultiAllocationContainer<'a> {
+    pub fn new(&self, gpu: &'a Gpu, lengths: [usize; 2]) -> anyhow::Result<Self> {
+        let ma = MultiAllocation::<(usize, usize)>::new(gpu, lengths)?;
+        let part1 = {
+            let MultiAllocationPart { device, host, count, .. } = ma.part::<0, usize>();
+            MultiAllocationPart { device, host, count, pd: PhantomData }
+        };
+        let part2 = {
+            let MultiAllocationPart { device, host, count, .. } = ma.part::<1, usize>();
+            MultiAllocationPart { device, host, count, pd: PhantomData }
+        };
+        Ok(Self {
+            ma: ma.allocation,
+            part1,
+            part2,
+        })
+    }
+}
 
 pub struct MultiAllocationPart<'a, T: Pod> {
     device: DevicePointer,
     host: *mut T,
     count: usize,
     pd: PhantomData<&'a T>,
+}
+
+impl<'a, T: Pod> MultiAllocationPart<'a, T> {
+    pub unsafe fn from_raw_parts(device: DevicePointer, host: *mut T, count: usize) -> Self {
+        Self {
+            device,
+            host,
+            count,
+            pd: PhantomData,
+        }
+    }
+
+    pub fn to_raw_parts(self) -> (DevicePointer, *mut T, usize) {
+        (self.device, self.host, self.count)
+    }
 }
 
 impl<'a, T: Pod> MemoryAllocation for MultiAllocationPart<'a, T> {
@@ -146,6 +190,10 @@ impl<'a, T: ?Sized + MultiType> MultiAllocation<'a, T> {
 
     pub fn new(gpu: &'a Gpu, counts: T::Array<usize>) -> anyhow::Result<Self> {
         Self::new_mem(gpu, counts, Memory::Default)
+    }
+
+    pub fn into_inner(self) -> Allocation<'a, u8> {
+        self.allocation
     }
 
     pub fn device_i(&self, i: usize) -> DevicePointer {
