@@ -8,7 +8,7 @@ default = ["device-fault"]
 device-fault = []
 
 [dependencies]
-bytemuck = { workspace = true }
+bytemuck = { workspace = true, features = ["min_const_generics"] }
 bitflags = { workspace = true }
 smart-default = "0.7.1"
 vulkanalia = { workspace = true }
