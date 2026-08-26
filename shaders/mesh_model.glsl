@@ -24,6 +24,7 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Mes
     Frustum frustum;
     Pointer models;
     MeshDataMaterials materials;
+    vec4 cameraPos;
 };
 
 layout(std430, push_constant) uniform Data {
@@ -61,10 +62,6 @@ uint murmurHash11(uint src) {
 }
 
 void main() {
-    // TODO: cone culling
-    // TODO: calculate tangent and bitangent for normal mapping
-    // TODO: move culling into task shader
-
     MeshData d = data.mesh;
     MeshletInfo mi = IN.meshletInfos.data[gl_WorkGroupID.x];
     if ((mi.flags & 0x01) != 0) {

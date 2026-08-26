@@ -1,6 +1,7 @@
+use std::time::Instant;
 use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec3, Vec4};
+use glam::{Mat4, Vec3, Vec3A, Vec4};
 use half::f16;
 use gpu::{MemoryAllocation, MemoryAllocator};
 use macros::multi_allocation;
@@ -64,6 +65,7 @@ struct ModelFlags(u32);
 bitflags! {
     impl ModelFlags : u32 {
         const NoRender = 0x01;
+        // ignores meshlet transforms, only uses model transform when adjusting AABB
         const EnableCulling = 0x02;
     }
 }
@@ -87,6 +89,7 @@ struct MeshData {
     frustum: Frustum,
     model_parts: gpu::DevicePointer,  // [ModelPart]
     materials: gpu::DevicePointer,  // [UVec4]
+    camera_pos: Vec3A,
 }
 
 #[repr(C)]
@@ -135,6 +138,8 @@ const MODEL_PART_SIZE: usize = 64;
 
 impl<'a> MeshModels<'a> {
     pub fn from_gltf_scene(gpu: &'a gpu::Gpu, scene: &Scene) -> anyhow::Result<Self> {
+        let start_time = Instant::now();
+
         let vertex_positions = scene.vertices.host().iter()
             .map(|v| Vec3::from_array(v.0.map(f16::to_f32))).collect::<Vec<_>>();
         let vertex_adapter = meshopt::VertexDataAdapter::new(
@@ -154,9 +159,8 @@ impl<'a> MeshModels<'a> {
 
         alloc.meshlet_transforms.host_mut()[0] = Mat4::IDENTITY;
         for (i, meshlet) in meshlets.meshlets.iter().enumerate() {
-            // TODO: cone culling
             // TODO: per meshlet optimization
-            // TODO: reduce max triangle count to 96
+            // TODO: AABB per model part, proper clustering with meshopt
 
             let mut vertices = [bytemuck::zeroed(); 64];
             let mut triangles = [0; 128];
@@ -226,6 +230,8 @@ impl<'a> MeshModels<'a> {
             };
         }
 
+        println!("Clusterized scene in {:.03} seconds", start_time.elapsed().as_secs_f32());
+
         Ok(Self {
             shader_task: load_shader("shaders/task_model.glsl", gpu::ShaderStage::Task, gpu)?,
             shader_mesh: load_shader("shaders/mesh_model.glsl", gpu::ShaderStage::MeshWithTask, gpu)?,
@@ -239,7 +245,7 @@ impl<'a> MeshModels<'a> {
 
     pub fn render(&self, arena: &gpu::Arena<'a>, cmd_buf: &mut gpu::CommandBuffer<'a>,
                   pixel_data: gpu::DevicePointer, materials: gpu::DevicePointer,
-                  view_proj: &Mat4, old_shaders: bool) -> anyhow::Result<()> {
+                  view_proj: &Mat4, old_shaders: bool, camera_pos: Vec3A) -> anyhow::Result<()> {
         let model_pointers = arena.alloc_data(&[
             self.alloc.models.device().add_typed::<Model>(0),
         ])?;
@@ -248,6 +254,7 @@ impl<'a> MeshModels<'a> {
             frustum: get_frustum(view_proj),
             model_parts: if old_shaders { model_pointers.device() } else { self.alloc.model_parts.device() },
             materials,
+            camera_pos,
         }])?;
 
         if old_shaders {

@@ -23,6 +23,7 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Mes
     Model model;
 };
 
+// TODO: AABB per model part, proper clustering with meshopt
 struct ModelPart {
     MeshDataModel model;
     uint meshletOffset;
@@ -38,6 +39,7 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Mes
     Frustum frustum;
     MeshDataModelParts modelParts;
     Pointer materials;
+    vec4 cameraPos;
 };
 
 layout(std430, push_constant) uniform Data {
@@ -48,8 +50,6 @@ layout(std430, push_constant) uniform Data {
 shared uint meshletOutputIndex;
 
 void main() {
-    bool alive = true;
-
     MeshData d = data.mesh;
     ModelPart mp = d.modelParts.data[gl_WorkGroupID.x];
     if (gl_LocalInvocationIndex >= mp.meshletCount) {
@@ -73,23 +73,20 @@ void main() {
 
     MeshletInfo mi = m.meshletInfos.data[mp.meshletOffset + gl_LocalInvocationIndex];
 
-    mat4 meshletTransform;
+    bool alive = true;
     if ((mi.flags & 0x01) != 0) {
-        return;
-    } else {
-        meshletTransform = modelTransform * mi.transform.transform;
-        if ((mi.flags & 0x02) == 0) {
-            // TODO: cone culling
-            if (!checkFrustum(d.frustum, mi.aabb, meshletTransform)) {
-                return;
-            }
+        alive = false;
+    } else if ((mi.flags & 0x02) == 0) {
+        mat4 meshletTransform = modelTransform * mi.transform.transform;
+        if (!checkFrustum(d.frustum, mi.aabb, meshletTransform)) {
+            alive = false;
         }
     }
 
     meshletOutputIndex = 0;
     memoryBarrierShared();
 
-    uvec4 ballot = subgroupBallot(true);
+    uvec4 ballot = subgroupBallot(alive);
     uint subgroupIndex = subgroupBallotExclusiveBitCount(ballot);
     uint subgroupOffset;
     if (subgroupElect()) {
@@ -100,7 +97,9 @@ void main() {
 
     memoryBarrierShared();
 
-    OUT.meshletOffsets[index] = uint8_t(gl_LocalInvocationIndex);
+    if (alive) {
+        OUT.meshletOffsets[index] = uint8_t(gl_LocalInvocationIndex);
+    }
 
     if (subgroupElect()) {
         OUT.model = modelTransform;

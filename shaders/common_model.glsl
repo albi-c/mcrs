@@ -70,12 +70,12 @@ void checkFrustum(in Frustum f, in AABB aabb) {
         return;
     }
 
-    vec3 center = (g_modelTransform * vec4(aabb.data[0], aabb.data[1], aabb.data[2], 1.0)).xyz;
-    mat3 model3 = mat3(g_modelTransform);
+    mat4 modelTransform = g_modelTransform;
+    vec3 center = (modelTransform * vec4(aabb.data[0], aabb.data[1], aabb.data[2], 1.0)).xyz;
     vec3 extent = mat3(
-        abs(model3[0]),
-        abs(model3[1]),
-        abs(model3[2])
+        abs(modelTransform[0].xyz),
+        abs(modelTransform[1].xyz),
+        abs(modelTransform[2].xyz)
     ) * vec3(aabb.data[3], aabb.data[4], aabb.data[5]);
     vec4 plane = f.planes[gl_LocalInvocationIndex];
     float dist = dot(plane.xyz, center) + plane.w;

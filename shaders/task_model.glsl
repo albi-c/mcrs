@@ -32,6 +32,7 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Mes
     Frustum frustum;
     MeshDataModelPointers modelPointers;
     Pointer materials;
+    vec4 cameraPos;
 };
 
 layout(std430, push_constant) uniform Data {

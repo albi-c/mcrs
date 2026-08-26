@@ -24,6 +24,7 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Mes
     Frustum frustum;
     Pointer modelParts;
     MeshDataMaterials materials;
+    vec4 cameraPos;
 };
 
 layout(std430, push_constant) uniform Data {
@@ -68,12 +69,6 @@ void main() {
 
     uint meshletIndex = uint(IN.meshletOffsets[gl_WorkGroupID.x]) + IN.meshletBase;
     MeshletInfo mi = IN.meshletInfos.data[meshletIndex];
-    if ((mi.flags & 0x01) != 0) {
-        if (gl_LocalInvocationIndex == 0) {
-            SetMeshOutputsEXT(0, 0);
-        }
-        return;
-    }
 
     if (gl_LocalInvocationIndex == 0) {
         SetMeshOutputsEXT(mi.vertexCount, mi.triangleCount);
