@@ -428,6 +428,7 @@ impl<'a> Application<'a> {
         // TODO: proper resource loading - gltf to internal format
         // TODO: multithreading (probably handled by bevy_ecs if that is used)
         // TODO: gpu timestamps for profiling, integration with imgui timeline
+        // TODO: async file io, reading into gpu buffers from other threads
 
         const INTENSITY: f32 = 1.5;
         const COLOR: Vec3A = Vec3A::new(0.85, 0.65, 0.05);
@@ -558,6 +559,8 @@ impl<'a> Application<'a> {
             sampler_descriptors,
             accel_struct_descriptors,
 
+            mesh_models: MeshModels::from_gltf_scene(gpu, &gltf.scenes[0])?,
+
             gltf,
             lights,
             rt: RayTracing {
@@ -569,8 +572,6 @@ impl<'a> Application<'a> {
             particle_groups,
             particles,
             mesh_particles,
-
-            mesh_models: MeshModels::new(gpu)?,
 
             keys: HashMap::new(),
             camera_pos: Vec3::new(0.0, 0.0, 0.0),
@@ -720,11 +721,13 @@ impl<'a> Application<'a> {
 
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-        struct PixelData(Vec3, u32, gpu::DevicePointer);
+        struct PixelData(Vec3, u32, gpu::DevicePointer, u8, [u8; 7]);
         let pixel_data = arena.alloc_data(&[PixelData(
             self.camera_pos,
             self.lights.len() as u32,
             self.lights.device(),
+            if self.get_key(KeyCode::KeyK) { 1 } else { 0 },
+            [0u8; 7],
         )])?;
 
         #[repr(C)]
@@ -789,15 +792,17 @@ impl<'a> Application<'a> {
         };
         command_buffer.begin_render_pass(&render_pass_desc);
 
-        command_buffer.bind_shaders([&self.shaders.vertex, &self.shaders.pixel]);
-        let indices = &self.gltf.scenes[0].indices;
-        command_buffer.draw_indexed(
-            vertex_data.device(), pixel_data.device(),
-            indices.device(), indices.len() as u32, gpu::IndexType::U32);
-
-        self.mesh_models.render(
-            arena, &mut command_buffer, pixel_data.device(),
-            self.gltf.scenes[0].materials.device(), &mat_vp)?;
+        if self.get_key(KeyCode::KeyM) {
+            command_buffer.bind_shaders([&self.shaders.vertex, &self.shaders.pixel]);
+            let indices = &self.gltf.scenes[0].indices;
+            command_buffer.draw_indexed(
+                vertex_data.device(), pixel_data.device(),
+                indices.device(), indices.len() as u32, gpu::IndexType::U32);
+        } else {
+            self.mesh_models.render(
+                arena, &mut command_buffer, pixel_data.device(),
+                self.gltf.scenes[0].materials.device(), &mat_vp)?;
+        }
 
         command_buffer.end_render_pass();
 

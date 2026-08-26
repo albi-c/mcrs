@@ -7,6 +7,7 @@ layout(location = 0) in vec2 inUv;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) flat in uvec4 inMat;
 layout(location = 3) in vec3 inWorldPos;
+layout(location = 4) flat in uint inDebugColor;
 
 layout(location = 0) out vec4 outColor;
 
@@ -30,6 +31,7 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Fra
     float viewZ;
     uint lightCount;
     FragDataLights lights;
+    bool useDebugColor;
 };
 
 layout(std430, push_constant) uniform Data {
@@ -91,6 +93,12 @@ vec3 getSampledNormal(uint tex, vec3 viewPos, float strength) {
 }
 
 void main() {
+    FragData d = data.frag;
+    if (d.useDebugColor) {
+        outColor = vec4(readPacked(inDebugColor).rgb, 1.0);
+        return;
+    }
+
     uint texDiffuseRaw = inMat.x >> 16;
     uint texDiffuse = texDiffuseRaw & 0x7fffu;
     uint texDisp = texDiffuse + (inMat.x & 0xfu);
@@ -127,7 +135,6 @@ void main() {
     vec3 diffuseBase = sampleDiffuse.rgb * diffuse;
     vec3 resultColor = diffuseBase * intensityAmbient;
 
-    FragData d = data.frag;
     vec3 viewPos = vec3(d.viewX, d.viewY, d.viewZ);
 
     vec3 normal = texDisp == texDiffuse ? inNormal : getSampledNormal(texDisp, viewPos, normalFactor);

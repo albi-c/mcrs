@@ -5,6 +5,7 @@ use half::f16;
 use gpu::{MemoryAllocation, MemoryAllocator};
 use macros::multi_allocation;
 use crate::application::load_shader;
+use crate::gltf::Scene;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
@@ -26,17 +27,6 @@ struct Vertex {
     // 11:10:11
     // z / 1024 - 1, y / 512 - 1, x / 1024 - 1
     normal: u32,
-}
-
-fn pack_normal(normal: Vec3) -> u32 {
-    let x = (((normal.x + 1.0) * 1024.0) as u32).clamp(0, 0x7ff);
-    let y = (((normal.y + 1.0) * 512.0) as u32).clamp(0, 0x3ff);
-    let z = (((normal.z + 1.0) * 1024.0) as u32).clamp(0, 0x7ff);
-    x | (y << 11) | (z << 21)
-}
-
-fn pack_triangle(indices: [usize; 3]) -> u32 {
-    u32::from_le_bytes([indices[0] as u8, indices[1] as u8, indices[2] as u8, 0u8])
 }
 
 #[repr(C)]
@@ -132,82 +122,89 @@ fn get_frustum(view_proj: &Mat4) -> Frustum {
 }
 
 impl<'a> MeshModels<'a> {
-    pub fn new(gpu: &'a gpu::Gpu) -> anyhow::Result<Self> {
-        let aabb = AABB {
-            center: Vec3::new(2.0, 2.0, 2.0),
-            extent: Vec3::new(2.0, 0.0, 2.0),
-        };
-
-        let mut vertices = [Default::default(); 64];
-        for z in 0..5 {
-            for x in 0..5 {
-                vertices[x + 5 * z] = Vertex {
-                    pos: [
-                        f16::from_f32(x as f32),
-                        f16::from_f32(2.0),
-                        f16::from_f32(z as f32),
-                    ],
-                    mat: 0,
-                    uv: [
-                        f16::from_f32(0.5),
-                        f16::from_f32(0.5),
-                    ],
-                    normal: pack_normal(Vec3::new(0.0, 1.0, 0.0)),
-                }
-            }
-        }
-
-        let mut triangles = [0u32; 126];
-        for z in 0..4 {
-            for x in 0..4 {
-                let base = x + 5 * z;
-                let next_row = x + 5 * (z + 1);
-                triangles[2 * (x + 4 * z) + 0] = pack_triangle([base, base + 1, next_row]);
-                triangles[2 * (x + 4 * z) + 1] = pack_triangle([base, next_row, next_row + 1]);
-            }
-        }
+    pub fn from_gltf_scene(gpu: &'a gpu::Gpu, scene: &Scene) -> anyhow::Result<Self> {
+        let vertex_positions = scene.vertices.host().iter()
+            .map(|v| Vec3::from_array(v.0.map(f16::to_f32))).collect::<Vec<_>>();
+        let vertex_adapter = meshopt::VertexDataAdapter::new(
+            bytemuck::cast_slice(&vertex_positions), 12, 0)?;
+        let meshlets = meshopt::build_meshlets(
+            scene.indices.host(), &vertex_adapter, 64, 126, 0.0);
 
         let mut alloc = MultiAlloc::new(gpu, MultiAllocCounts {
             meshlet_transforms: 1,
-            meshlet_infos: 1,
-            meshlets: 1,
+            meshlet_infos: meshlets.len(),
+            meshlets: meshlets.len(),
             model_transforms: 1,
             models: 1,
         })?;
 
+
         alloc.meshlet_transforms.host_mut()[0] = Mat4::IDENTITY;
-        alloc.meshlet_infos.host_mut()[0] = MeshletInfo {
-            // TODO: somehow modify model AABB when using meshlet transform to fix top level culling
-            // probably just disable top level culling when meshlet matrix can change
-            aabb,
-            transform: alloc.meshlet_transforms.device().add_typed::<Mat4>(0),
-            vertex_count: 25,
-            triangle_count: 32,
-            flags: MeshletInfoFlags::empty(),
-            _padding: [0u8; 13],
-        };
-        alloc.meshlets.host_mut()[0] = Meshlet {
-            vertices,
-            triangles,
-            _padding: [0u32; 2],
-        };
-        alloc.model_transforms.host_mut()[0] = Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0));
+        for (i, meshlet) in meshlets.meshlets.iter().enumerate() {
+            // TODO: cone culling
+            // TODO: per meshlet optimization
+            // TODO: reduce max triangle count to 96
+
+            let mut vertices = [bytemuck::zeroed(); 64];
+            let mut triangles = [0; 126];
+            let mut min_coord = Vec3::INFINITY;
+            let mut max_coord = Vec3::NEG_INFINITY;
+            for j in 0..meshlet.vertex_count as usize {
+                let idx = meshlets.vertices[meshlet.vertex_offset as usize + j] as usize;
+                min_coord = min_coord.min(vertex_positions[idx]);
+                max_coord = max_coord.max(vertex_positions[idx]);
+                let vert = scene.vertices.host()[idx];
+                vertices[j] = Vertex {
+                    pos: vert.0,
+                    mat: vert.1,
+                    uv: vert.2,
+                    normal: vert.3,
+                };
+            }
+            for j in 0..meshlet.triangle_count as usize {
+                let tri = &meshlets.triangles[meshlet.triangle_offset as usize + 3 * j..][..3];
+                triangles[j] = u32::from_le_bytes([tri[0], tri[1], tri[2], 0]);
+            }
+
+            let center = max_coord.midpoint(min_coord);
+            let extent = (max_coord - min_coord) * 0.5;
+
+            alloc.meshlet_infos.host_mut()[i] = MeshletInfo {
+                aabb: AABB {
+                    center,
+                    extent,
+                },
+                transform: alloc.meshlet_transforms.device().add_typed::<Mat4>(0),
+                vertex_count: meshlet.vertex_count as u8,
+                triangle_count: meshlet.triangle_count as u8,
+                flags: MeshletInfoFlags::empty(),
+                _padding: [0u8; 13],
+            };
+            alloc.meshlets.host_mut()[i] = Meshlet {
+                vertices,
+                triangles,
+                _padding: [0u32; 2],
+            };
+        }
+
+        alloc.model_transforms.host_mut()[0] = Mat4::IDENTITY;
         alloc.models.host_mut()[0] = Model {
             meshlets: alloc.meshlets.device(),
             meshlet_infos: alloc.meshlet_infos.device(),
             transform: alloc.model_transforms.device().add_typed::<Mat4>(0),
-            meshlet_count: 1,
-            flags: ModelFlags::EnableCulling,
-            aabb,
-            _padding: [0u32; 2],
+            meshlet_count: meshlets.len() as u32,
+            flags: ModelFlags::empty(),
+            aabb: AABB {
+                center: Vec3::ZERO,
+                extent: Vec3::ZERO,
+            },
+            _padding: [0u32, 2],
         };
 
         Ok(Self {
             shader_task: load_shader("shaders/task_model.glsl", gpu::ShaderStage::Task, gpu)?,
             shader_mesh: load_shader("shaders/mesh_model.glsl", gpu::ShaderStage::MeshWithTask, gpu)?,
-            // TODO: use normal shader once everything else works
-            // shader_frag: load_shader("shaders/frag.glsl", gpu::ShaderStage::Pixel, gpu)?,
-            shader_frag: load_shader("shaders/frag_dummy.glsl", gpu::ShaderStage::Pixel, gpu)?,
+            shader_frag: load_shader("shaders/frag.glsl", gpu::ShaderStage::Pixel, gpu)?,
 
             alloc,
         })

@@ -10,6 +10,7 @@ layout(location = 0) out vec2 outUvs[];
 layout(location = 1) out vec3 outNormals[];
 layout(location = 2) flat out uvec4 outMaterials[];
 layout(location = 3) out vec3 outWorldPositions[];
+layout(location = 4) flat out uint outDebugColors[];
 
 taskPayloadSharedEXT Task IN;
 
@@ -50,7 +51,20 @@ uvec3 readIndices(uint packed) {
     return uvec3(packed & 0xff, (packed >> 8) & 0xff, (packed >> 16) & 0xff);
 }
 
+uint murmurHash11(uint src) {
+    const uint M = 0x5bd1e995u;
+    uint h = 1190494759u;
+    src *= M; src ^= src>>24u; src *= M;
+    h *= M; h ^= src;
+    h ^= h>>13u; h *= M; h ^= h>>15u;
+    return h;
+}
+
 void main() {
+    // TODO: cone culling
+    // TODO: calculate tangent and bitangent for normal mapping
+    // TODO: move culling into task shader
+
     MeshData d = data.mesh;
     MeshletInfo mi = IN.meshletInfos.data[gl_WorkGroupID.x];
     if ((mi.flags & 0x01) != 0) {
@@ -87,18 +101,13 @@ void main() {
     if (gl_LocalInvocationIndex < mi.vertexCount) {
         Vertex v = IN.meshlets.data[gl_WorkGroupID.x].vertices[gl_LocalInvocationIndex];
 
-        uvec4 material;
-        if (subgroupElect()) {
-            material = d.materials.data[v.mat];
-        }
-        material = subgroupBroadcastFirst(material);
-
         vec4 worldPos = modelTransform * getVertexPosition(v);
         gl_MeshVerticesEXT[gl_LocalInvocationIndex].gl_Position = d.viewProj * worldPos;
         outUvs[gl_LocalInvocationIndex] = getVertexUv(v);
         outNormals[gl_LocalInvocationIndex] = getVertexNormal(v);
-        outMaterials[gl_LocalInvocationIndex] = material;
+        outMaterials[gl_LocalInvocationIndex] = d.materials.data[v.mat];
         outWorldPositions[gl_LocalInvocationIndex] = worldPos.xyz;
+        outDebugColors[gl_LocalInvocationIndex] = murmurHash11(gl_WorkGroupID.x);
     }
 
     if (gl_LocalInvocationIndex < mi.triangleCount) {

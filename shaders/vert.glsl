@@ -6,6 +6,7 @@ layout(location = 0) out vec2 outUv;
 layout(location = 1) out vec3 outNormal;
 layout(location = 2) flat out uvec4 outMat;
 layout(location = 3) out vec3 outWorldPos;
+layout(location = 4) flat out uint outDebugColor;
 
 struct Vertex {
     float16_t x;
@@ -79,6 +80,7 @@ void main() {
     outUv = getVertexUv(vertex);
     vec3 normal = getVertexNormal(vertex);
     outNormal = normal;
+    outDebugColor = 0xffffffff;
 
     Material material = d.materials.data[vertex.mat];
     outMat = uvec4(material.texDiffuseOffsets, material.ambientAndRoughness, material.diffuseAndNormal, material.specularAndExp);

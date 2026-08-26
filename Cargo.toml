@@ -31,7 +31,7 @@ vulkanalia = { workspace = true, features = ["libloading", "window"] }
 log = { workspace = true }
 pretty_env_logger = { workspace = true }
 glam = { workspace = true }
-bytemuck = { workspace = true }
+bytemuck = { workspace = true, version = "1.0.0", features = ["const_zeroed"] }
 bitflags = { workspace = true }
 image = "0.25.9"
 lz4_flex = "0.14.0"
