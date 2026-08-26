@@ -75,19 +75,19 @@ void main() {
     }
 
     if (gl_LocalInvocationIndex == 0) {
-        isInFrustum = true;
-        modelTransform = IN.model * mi.transform.transform;
+        g_isInFrustum = true;
+        g_modelTransform = IN.model * mi.transform.transform;
     }
 
     memoryBarrierShared();
 
     if ((mi.flags & 0x02) == 0) {
-        checkFrustum(d.frustum, mi.aabb);
+        checkFrustum(d.frustum, mi.aabb, g_isInFrustum, g_modelTransform);
 
         memoryBarrierShared();
     }
 
-    if (!isInFrustum) {
+    if (!g_isInFrustum) {
         if (gl_LocalInvocationIndex == 0) {
             SetMeshOutputsEXT(0, 0);
         }
@@ -101,7 +101,7 @@ void main() {
     if (gl_LocalInvocationIndex < mi.vertexCount) {
         Vertex v = IN.meshlets.data[gl_WorkGroupID.x].vertices[gl_LocalInvocationIndex];
 
-        vec4 worldPos = modelTransform * getVertexPosition(v);
+        vec4 worldPos = g_modelTransform * getVertexPosition(v);
         gl_MeshVerticesEXT[gl_LocalInvocationIndex].gl_Position = d.viewProj * worldPos;
         outUvs[gl_LocalInvocationIndex] = getVertexUv(v);
         outNormals[gl_LocalInvocationIndex] = getVertexNormal(v);

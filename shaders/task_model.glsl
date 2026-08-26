@@ -52,25 +52,25 @@ void main() {
     }
 
     if (gl_LocalInvocationIndex == 0) {
-        isInFrustum = true;
-        modelTransform = m.transform.transform;
+        g_isInFrustum = true;
+        g_modelTransform = m.transform.transform;
     }
 
     memoryBarrierShared();
 
     if ((m.flags & 0x02) != 0) {
-        checkFrustum(d.frustum, m.aabb);
+        checkFrustum(d.frustum, m.aabb, g_isInFrustum, g_modelTransform);
 
         memoryBarrierShared();
     }
 
-    if (!isInFrustum) {
+    if (!g_isInFrustum) {
         EmitMeshTasksEXT(0, 0, 0);
         return;
     }
 
     if (gl_LocalInvocationIndex == 0) {
-        OUT.model = modelTransform;
+        OUT.model = g_modelTransform;
         OUT.meshlets = m.meshlets;
         OUT.meshletInfos = m.meshletInfos;
     }

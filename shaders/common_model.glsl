@@ -63,14 +63,14 @@ struct Frustum {
     vec4 planes[5];
 };
 
-shared bool isInFrustum;
-shared mat4 modelTransform;
+shared bool g_isInFrustum;
+shared mat4 g_modelTransform;
 
 // !! shader local size must be at least 6
 // TODO: make workgroup size a multiple of 64 and replace shared variables with arrays (indexed with Y index)
 // e.g. local_size_x = 5, local_size_y = 64
 // shared bool isInFrustum[64];
-void checkFrustum(in Frustum f, in AABB aabb) {
+void checkFrustum(in Frustum f, in AABB aabb, in bool isInFrustum, in mat4 modelTransform) {
     if (gl_LocalInvocationIndex >= 5) {
         return;
     }
