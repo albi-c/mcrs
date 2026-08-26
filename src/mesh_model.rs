@@ -34,8 +34,7 @@ struct Vertex {
 struct Meshlet {
     vertices: [Vertex; 64],
     // packed: each uint: 0..8 - idx 1, 8..16 - idx 2, 16..24 - idx 3
-    triangles: [u32; 126],
-    _padding: [u32; 2],
+    triangles: [u32; 128],
 }
 
 #[repr(transparent)]
@@ -86,8 +85,16 @@ struct Model {
 struct MeshData {
     view_proj: Mat4,
     frustum: Frustum,
-    models_pointers: gpu::DevicePointer,  // [*Model]
+    model_parts: gpu::DevicePointer,  // [ModelPart]
     materials: gpu::DevicePointer,  // [UVec4]
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct ModelPart {
+    model: gpu::DevicePointer,  // Model
+    meshlet_offset: u32,
+    meshlet_count: u32,
 }
 
 #[multi_allocation]
@@ -97,11 +104,14 @@ struct MultiAlloc {
     meshlets: Meshlet,
     model_transforms: Mat4,
     models: Model,
+    model_parts: ModelPart,
 }
 
 pub struct MeshModels<'a> {
     shader_task: gpu::Shader<'a>,
     shader_mesh: gpu::Shader<'a>,
+    shader_task2: gpu::Shader<'a>,
+    shader_mesh2: gpu::Shader<'a>,
     shader_frag: gpu::Shader<'a>,
 
     alloc: MultiAlloc<'a>,
@@ -121,6 +131,8 @@ fn get_frustum(view_proj: &Mat4) -> Frustum {
     ])
 }
 
+const MODEL_PART_SIZE: usize = 64;
+
 impl<'a> MeshModels<'a> {
     pub fn from_gltf_scene(gpu: &'a gpu::Gpu, scene: &Scene) -> anyhow::Result<Self> {
         let vertex_positions = scene.vertices.host().iter()
@@ -128,16 +140,17 @@ impl<'a> MeshModels<'a> {
         let vertex_adapter = meshopt::VertexDataAdapter::new(
             bytemuck::cast_slice(&vertex_positions), 12, 0)?;
         let meshlets = meshopt::build_meshlets(
-            scene.indices.host(), &vertex_adapter, 64, 126, 0.0);
+            scene.indices.host(), &vertex_adapter, 64, 96, 0.0);
 
+        let model_parts = meshlets.len().div_ceil(MODEL_PART_SIZE);
         let mut alloc = MultiAlloc::new(gpu, MultiAllocCounts {
             meshlet_transforms: 1,
             meshlet_infos: meshlets.len(),
             meshlets: meshlets.len(),
             model_transforms: 1,
             models: 1,
+            model_parts,
         })?;
-
 
         alloc.meshlet_transforms.host_mut()[0] = Mat4::IDENTITY;
         for (i, meshlet) in meshlets.meshlets.iter().enumerate() {
@@ -146,7 +159,7 @@ impl<'a> MeshModels<'a> {
             // TODO: reduce max triangle count to 96
 
             let mut vertices = [bytemuck::zeroed(); 64];
-            let mut triangles = [0; 126];
+            let mut triangles = [0; 128];
             let mut min_coord = Vec3::INFINITY;
             let mut max_coord = Vec3::NEG_INFINITY;
             for j in 0..meshlet.vertex_count as usize {
@@ -183,7 +196,6 @@ impl<'a> MeshModels<'a> {
             alloc.meshlets.host_mut()[i] = Meshlet {
                 vertices,
                 triangles,
-                _padding: [0u32; 2],
             };
         }
 
@@ -200,10 +212,25 @@ impl<'a> MeshModels<'a> {
             },
             _padding: [0u32, 2],
         };
+        for i in 0..model_parts {
+            let offset = (i * MODEL_PART_SIZE) as u32;
+            let count = if i == model_parts - 1 {
+                meshlets.len() - (model_parts - 1) * MODEL_PART_SIZE
+            } else {
+                MODEL_PART_SIZE
+            } as u32;
+            alloc.model_parts.host_mut()[i] = ModelPart {
+                model: alloc.models.device().add_typed::<Model>(0),
+                meshlet_offset: offset,
+                meshlet_count: count,
+            };
+        }
 
         Ok(Self {
             shader_task: load_shader("shaders/task_model.glsl", gpu::ShaderStage::Task, gpu)?,
             shader_mesh: load_shader("shaders/mesh_model.glsl", gpu::ShaderStage::MeshWithTask, gpu)?,
+            shader_task2: load_shader("shaders/task_model2.glsl", gpu::ShaderStage::Task, gpu)?,
+            shader_mesh2: load_shader("shaders/mesh_model2.glsl", gpu::ShaderStage::MeshWithTask, gpu)?,
             shader_frag: load_shader("shaders/frag.glsl", gpu::ShaderStage::Pixel, gpu)?,
 
             alloc,
@@ -212,21 +239,26 @@ impl<'a> MeshModels<'a> {
 
     pub fn render(&self, arena: &gpu::Arena<'a>, cmd_buf: &mut gpu::CommandBuffer<'a>,
                   pixel_data: gpu::DevicePointer, materials: gpu::DevicePointer,
-                  view_proj: &Mat4) -> anyhow::Result<()> {
+                  view_proj: &Mat4, old_shaders: bool) -> anyhow::Result<()> {
         let model_pointers = arena.alloc_data(&[
             self.alloc.models.device().add_typed::<Model>(0),
         ])?;
-
         let mesh_data = arena.alloc_data(&[MeshData {
             view_proj: *view_proj,
             frustum: get_frustum(view_proj),
-            models_pointers: model_pointers.device(),
+            model_parts: if old_shaders { model_pointers.device() } else { self.alloc.model_parts.device() },
             materials,
         }])?;
 
-        cmd_buf.bind_shaders([&self.shader_task, &self.shader_mesh, &self.shader_frag]);
-        cmd_buf.draw_meshlets(
-            mesh_data.device(), pixel_data, (self.alloc.models.len() as u32, 1, 1));
+        if old_shaders {
+            cmd_buf.bind_shaders([&self.shader_task, &self.shader_mesh, &self.shader_frag]);
+            cmd_buf.draw_meshlets(
+                mesh_data.device(), pixel_data, (self.alloc.models.len() as u32, 1, 1));
+        } else {
+            cmd_buf.bind_shaders([&self.shader_task2, &self.shader_mesh2, &self.shader_frag]);
+            cmd_buf.draw_meshlets(
+                mesh_data.device(), pixel_data, (self.alloc.model_parts.len() as u32, 1, 1));
+        }
 
         Ok(())
     }

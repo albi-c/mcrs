@@ -3,10 +3,7 @@
 #include "common.glsl"
 #include "common_model.glsl"
 
-// TODO: make workgroup size a multiple of 64 and replace shared variables with arrays (indexed with Y index)
-// e.g. local_size_x = 6, local_size_y = 32
-// shared bool isInFrustum[32];
-layout(local_size_x = 6, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 5, local_size_y = 1, local_size_z = 1) in;
 
 taskPayloadSharedEXT Task OUT;
 
@@ -16,7 +13,7 @@ struct Model {
     MeshDataModelMeshletInfos meshletInfos;
     MeshDataTransform transform;
     uint meshletCount;
-    // bit 0: disable rendering, bit 1: disable frustum culling
+    // bit 0: disable rendering, bit 1: enable frustum culling
     uint flags;
     AABB aabb;
     uint _padding[2];
@@ -59,7 +56,7 @@ void main() {
     memoryBarrierShared();
 
     if ((m.flags & 0x02) != 0) {
-        checkFrustum(d.frustum, m.aabb, g_isInFrustum, g_modelTransform);
+        checkFrustum(d.frustum, m.aabb);
 
         memoryBarrierShared();
     }

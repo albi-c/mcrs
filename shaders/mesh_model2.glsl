@@ -1,7 +1,7 @@
 #version 450
 
 #include "common.glsl"
-#include "common_model.glsl"
+#include "common_model2.glsl"
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout(triangles, max_vertices = 64, max_primitives = 96) out;
@@ -22,7 +22,7 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Mes
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshData {
     mat4 viewProj;
     Frustum frustum;
-    Pointer models;
+    Pointer modelParts;
     MeshDataMaterials materials;
 };
 
@@ -61,33 +61,14 @@ uint murmurHash11(uint src) {
 }
 
 void main() {
-    // TODO: cone culling
     // TODO: calculate tangent and bitangent for normal mapping
-    // TODO: move culling into task shader
+    // TODO: move material indexing into fragment shader and later into postprocessing when doing deferred
 
     MeshData d = data.mesh;
-    MeshletInfo mi = IN.meshletInfos.data[gl_WorkGroupID.x];
+
+    uint meshletIndex = uint(IN.meshletOffsets[gl_WorkGroupID.x]) + IN.meshletBase;
+    MeshletInfo mi = IN.meshletInfos.data[meshletIndex];
     if ((mi.flags & 0x01) != 0) {
-        if (gl_LocalInvocationIndex == 0) {
-            SetMeshOutputsEXT(0, 0);
-        }
-        return;
-    }
-
-    if (gl_LocalInvocationIndex == 0) {
-        g_isInFrustum = true;
-        g_modelTransform = IN.model * mi.transform.transform;
-    }
-
-    memoryBarrierShared();
-
-    if ((mi.flags & 0x02) == 0) {
-        checkFrustum(d.frustum, mi.aabb);
-
-        memoryBarrierShared();
-    }
-
-    if (!g_isInFrustum) {
         if (gl_LocalInvocationIndex == 0) {
             SetMeshOutputsEXT(0, 0);
         }
@@ -99,21 +80,21 @@ void main() {
     }
 
     if (gl_LocalInvocationIndex < mi.vertexCount) {
-        Vertex v = IN.meshlets.data[gl_WorkGroupID.x].vertices[gl_LocalInvocationIndex];
+        Vertex v = IN.meshlets.data[meshletIndex].vertices[gl_LocalInvocationIndex];
 
-        vec4 worldPos = g_modelTransform * getVertexPosition(v);
+        vec4 worldPos = IN.model * mi.transform.transform * getVertexPosition(v);
         gl_MeshVerticesEXT[gl_LocalInvocationIndex].gl_Position = d.viewProj * worldPos;
         outUvs[gl_LocalInvocationIndex] = getVertexUv(v);
         outNormals[gl_LocalInvocationIndex] = getVertexNormal(v);
         outMaterials[gl_LocalInvocationIndex] = d.materials.data[v.mat];
         outWorldPositions[gl_LocalInvocationIndex] = worldPos.xyz;
-        outDebugColors[gl_LocalInvocationIndex] = murmurHash11(gl_WorkGroupID.x);
+        outDebugColors[gl_LocalInvocationIndex] = murmurHash11(meshletIndex);
     }
 
     if (gl_LocalInvocationIndex < mi.triangleCount) {
-        gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationIndex] = readIndices(IN.meshlets.data[gl_WorkGroupID.x].triangles[gl_LocalInvocationIndex]);
+        gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationIndex] = readIndices(IN.meshlets.data[meshletIndex].triangles[gl_LocalInvocationIndex]);
         if (gl_LocalInvocationIndex + 64 < mi.triangleCount) {
-            gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationIndex + 64] = readIndices(IN.meshlets.data[gl_WorkGroupID.x].triangles[gl_LocalInvocationIndex + 64]);
+            gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationIndex + 64] = readIndices(IN.meshlets.data[meshletIndex].triangles[gl_LocalInvocationIndex + 64]);
         }
     }
 }

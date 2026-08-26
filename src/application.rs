@@ -265,7 +265,7 @@ pub fn load_shader(path: impl AsRef<Path>, stage: gpu::ShaderStage, gpu: &gpu::G
         }
     }
     let result = compile_shader(&glsl, &path.as_ref().to_string_lossy(), stage)?;
-    {
+    if enable_caching {
         let mut file = fs::File::create(cache_path)?;
         file.write_all(bytemuck::cast_slice(&[hash(&glsl)]))?;
         file.write_all(result.as_binary_u8())?;
@@ -801,7 +801,7 @@ impl<'a> Application<'a> {
         } else {
             self.mesh_models.render(
                 arena, &mut command_buffer, pixel_data.device(),
-                self.gltf.scenes[0].materials.device(), &mat_vp)?;
+                self.gltf.scenes[0].materials.device(), &mat_vp, self.get_key(KeyCode::KeyJ))?;
         }
 
         command_buffer.end_render_pass();

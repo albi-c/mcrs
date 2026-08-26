@@ -2,6 +2,9 @@
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_ballot : require
 
+// max 256 due to 8 bit relative indices in Task struct
+const uint MODEL_PART_SIZE = 64;
+
 // --- 16 bytes, possible to extend to 24 to make Meshlet 2k in size
 struct Vertex {
     float16_t pos[3];
@@ -55,6 +58,8 @@ struct Task {
     mat4 model;
     MeshDataModelMeshlets meshlets;
     MeshDataModelMeshletInfos meshletInfos;
+    uint8_t meshletOffsets[MODEL_PART_SIZE];
+    uint meshletBase;
 };
 
 struct Frustum {
@@ -62,25 +67,22 @@ struct Frustum {
     vec4 planes[5];
 };
 
-shared bool g_isInFrustum;
-shared mat4 g_modelTransform;
-
-void checkFrustum(in Frustum f, in AABB aabb) {
-    if (gl_LocalInvocationIndex >= 5) {
-        return;
-    }
-
-    vec3 center = (g_modelTransform * vec4(aabb.data[0], aabb.data[1], aabb.data[2], 1.0)).xyz;
-    mat3 model3 = mat3(g_modelTransform);
+bool checkFrustum(in Frustum f, in AABB aabb, in mat4 modelTransform) {
+    return true;
+    vec3 center = (modelTransform * vec4(aabb.data[0], aabb.data[1], aabb.data[2], 1.0)).xyz;
+    mat3 model3 = mat3(modelTransform);
     vec3 extent = mat3(
         abs(model3[0]),
         abs(model3[1]),
         abs(model3[2])
     ) * vec3(aabb.data[3], aabb.data[4], aabb.data[5]);
-    vec4 plane = f.planes[gl_LocalInvocationIndex];
-    float dist = dot(plane.xyz, center) + plane.w;
-    float radius = dot(abs(plane.xyz), extent);
-    if (dist + radius < 0.0) {
-        g_isInFrustum = false;
+    for (uint i = 0; i < 5; i++) {
+        vec4 plane = f.planes[i];
+        float dist = dot(plane.xyz, center) + plane.w;
+        float radius = dot(abs(plane.xyz), extent);
+        if (dist + radius < 0.0) {
+            return false;
+        }
     }
+    return true;
 }
