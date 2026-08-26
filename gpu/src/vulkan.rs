@@ -5,37 +5,14 @@ use std::ffi::{c_void, CStr};
 use anyhow::{anyhow, Result};
 use smallvec::{smallvec, SmallVec};
 use vulkanalia::{vk, Device, Instance};
-use vulkanalia::vk::{DeviceV1_0, ExtShaderObjectExtensionDeviceCommands, HasBuilder, InstanceV1_0, InstanceV1_1, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
+use vulkanalia::vk::{DeviceV1_0, DeviceV1_2, ExtShaderObjectExtensionDeviceCommands, HasBuilder, InstanceV1_0, InstanceV1_1, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
 use crate::{need_portability_ext, validation_enabled, Cull, Gpu, Queue, Shader, ShaderStage, VALIDATION_LAYER};
 
-const FEATURE_REQUIREMENTS: &[(fn(&vk::PhysicalDeviceFeatures) -> vk::Bool32, &str)] = &[
-    (|f| f.shader_int64, "shader int64"),
-    (|f| f.multi_draw_indirect, "multi draw indirect"),
-    (|f| f.sampler_anisotropy, "sampler anisotropy"),
-    (|f| f.shader_int16, "shader int16"),
-];
-
 const EXTENSION_REQUIREMENTS: &[vk::ExtensionName] = &[
-    vk::KHR_SYNCHRONIZATION2_EXTENSION.name,
-    vk::KHR_DEVICE_GROUP_EXTENSION.name,
-    vk::KHR_BUFFER_DEVICE_ADDRESS_EXTENSION.name,
     vk::KHR_SWAPCHAIN_EXTENSION.name,
-    vk::KHR_MULTIVIEW_EXTENSION.name,
-    vk::KHR_MAINTENANCE2_EXTENSION.name,
-    vk::KHR_CREATE_RENDERPASS2_EXTENSION.name,
-    vk::KHR_DEPTH_STENCIL_RESOLVE_EXTENSION.name,
-    vk::KHR_DYNAMIC_RENDERING_EXTENSION.name,
     vk::EXT_SHADER_OBJECT_EXTENSION.name,
-    vk::KHR_TIMELINE_SEMAPHORE_EXTENSION.name,
-    vk::KHR_MAINTENANCE3_EXTENSION.name,
-    vk::EXT_DESCRIPTOR_INDEXING_EXTENSION.name,
     vk::EXT_DESCRIPTOR_BUFFER_EXTENSION.name,
-    vk::KHR_GET_MEMORY_REQUIREMENTS2_EXTENSION.name,
-    vk::KHR_STORAGE_BUFFER_STORAGE_CLASS_EXTENSION.name,
-    vk::KHR_16BIT_STORAGE_EXTENSION.name,
     vk::EXT_MESH_SHADER_EXTENSION.name,
-    vk::KHR_SPIRV_1_4_EXTENSION.name,
-    vk::KHR_SHADER_FLOAT_CONTROLS_EXTENSION.name,
     vk::KHR_DEFERRED_HOST_OPERATIONS_EXTENSION.name,
     vk::KHR_RAY_QUERY_EXTENSION.name,
     vk::KHR_ACCELERATION_STRUCTURE_EXTENSION.name,
@@ -123,7 +100,7 @@ impl CommandBufferPool {
         let mut cur = buffers.cursor_front_mut();
         loop {
             let Some((_, semaphore, count)) = cur.current() else { break };
-            if unsafe { device.get_semaphore_counter_value_khr(*semaphore)? } >= *count {
+            if unsafe { device.get_semaphore_counter_value(*semaphore)? } >= *count {
                 let item = cur.remove_current_as_list().unwrap();
                 return Ok(PooledCommandBuffer {
                     item,
@@ -451,13 +428,6 @@ fn create_swapchain_image_views(device: &Device, images: &[vk::Image], format: v
 fn check_device(instance: &Instance, device: vk::PhysicalDevice, surface: vk::SurfaceKHR) -> Result<QueueFamilies> {
     let device_properties = unsafe { instance.get_physical_device_properties(device) };
 
-    let features = unsafe { instance.get_physical_device_features(device) };
-    for (test, msg) in FEATURE_REQUIREMENTS {
-        if test(&features) != vk::TRUE {
-            return Err(anyhow!("gpu '{}' missing {} support", device_properties.device_name, msg))
-        }
-    }
-
     let extensions = unsafe { instance.enumerate_device_extension_properties(device, None)? }
         .into_iter()
         .map(|ext| ext.extension_name)
@@ -621,7 +591,8 @@ pub fn create_logical_device(instance: &Instance, physical_device: vk::PhysicalD
         .shader_float16(true)
         .buffer_device_address_capture_replay(true)
         .shader_int8(true)
-        .storage_buffer_8bit_access(true);
+        .storage_buffer_8bit_access(true)
+        .timeline_semaphore(true);
 
     let mut info_13 = vk::PhysicalDeviceVulkan13Features::builder()
         .dynamic_rendering(true)

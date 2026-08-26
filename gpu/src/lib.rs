@@ -25,7 +25,7 @@ use bytemuck::{Pod, Zeroable};
 use smallvec::{smallvec, SmallVec};
 use smart_default::SmartDefault;
 use vulkanalia::{vk, Device, Instance, Version};
-use vulkanalia::vk::{DeviceV1_0, DeviceV1_2, DeviceV1_3, ExtDescriptorBufferExtensionDeviceCommands, ExtDeviceFaultExtensionDeviceCommands, ExtMeshShaderExtensionDeviceCommands, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrBufferDeviceAddressExtensionDeviceCommands, KhrDynamicRenderingExtensionDeviceCommands, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands, KhrSynchronization2ExtensionDeviceCommands, KhrTimelineSemaphoreExtensionDeviceCommands};
+use vulkanalia::vk::{DeviceV1_0, DeviceV1_2, DeviceV1_3, ExtDescriptorBufferExtensionDeviceCommands, ExtDeviceFaultExtensionDeviceCommands, ExtMeshShaderExtensionDeviceCommands, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
 use vulkanalia_vma as vma;
 use vulkanalia_vma::Alloc;
 use crate::vulkan::{create_logical_device, create_semaphore, create_shader, create_swapchain, find_suitable_device, get_cull_mode, get_front_face, get_sample_count_flag, AccelerationStructureInfo, CommandBufferPool, DescriptorSizes, PipelineLayout, PooledCommandBuffer, QueueFamilies, Queues, Swapchain};
@@ -818,7 +818,7 @@ impl<'a> SubmitWait<'a> {
         let info = vk::SemaphoreWaitInfo::builder()
             .semaphores(&semaphores)
             .values(&values);
-        unsafe { self.2.device.wait_semaphores_khr(&info, u64::MAX).expect("semaphore wait failed") };
+        unsafe { self.2.device.wait_semaphores(&info, u64::MAX).expect("semaphore wait failed") };
         drop(std::mem::take(&mut self.3));
     }
 }
@@ -1307,10 +1307,10 @@ impl<'a> CommandBuffer<'a> {
 
         let dev = &self.gpu.device;
 
-        unsafe { dev.cmd_begin_rendering_khr(self.buffer, &info) };
+        unsafe { dev.cmd_begin_rendering(self.buffer, &info) };
 
         unsafe {
-            dev.cmd_set_stencil_test_enable_ext(self.buffer, false);
+            dev.cmd_set_stencil_test_enable(self.buffer, false);
 
             if let Some(_d) = desc.blend_state {
                 for i in 0..(desc.color_targets.len() as u32) {
@@ -1369,7 +1369,7 @@ impl<'a> CommandBuffer<'a> {
         }
     }
     pub fn end_render_pass(&mut self) {
-        unsafe { self.gpu.device.cmd_end_rendering_khr(self.buffer) };
+        unsafe { self.gpu.device.cmd_end_rendering(self.buffer) };
     }
 
     fn push_pipeline_data(&mut self, data: [DevicePointer; 2]) {
@@ -1518,7 +1518,7 @@ impl<'a> Semaphore<'a> {
         let info = vk::SemaphoreWaitInfo::builder()
             .semaphores(&semaphores)
             .values(&values);
-        unsafe { self.gpu.device.wait_semaphores_khr(&info, u64::MAX)? };
+        unsafe { self.gpu.device.wait_semaphores(&info, u64::MAX)? };
         Ok(())
     }
 }
@@ -1685,7 +1685,7 @@ impl Gpu {
 
         let addr_info = vk::BufferDeviceAddressInfo::builder()
             .buffer(buffer);
-        let addr = unsafe { self.device.get_buffer_device_address_khr(&addr_info) };
+        let addr = unsafe { self.device.get_buffer_device_address(&addr_info) };
 
         assert!(self.buffers.borrow_mut().insert(addr, (buffer, length)).is_none(),
                 "device address returned twice");
@@ -1815,7 +1815,7 @@ impl Gpu {
         let transitions = [transition];
         let dep_info = vk::DependencyInfoKHR::builder()
             .image_memory_barriers(&transitions);
-        unsafe { self.device.cmd_pipeline_barrier2_khr(cmd_buf.buffer, &dep_info) };
+        unsafe { self.device.cmd_pipeline_barrier2(cmd_buf.buffer, &dep_info) };
 
         Ok(Texture {
             dimensions: desc.dimensions,

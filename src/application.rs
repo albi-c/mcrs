@@ -403,9 +403,10 @@ impl<'a> Application<'a> {
         let tl_as = create_top_level_as(gpu, &queue, &bl_as)?;
         tl_as.descriptor(&mut accel_struct_descriptors[0]);
 
-        // TODO: extract and refactor gpu crate to use (reference counting - maybe?) and proper lifetimes
+        // TODO: refactor gpu crate to use (reference counting - maybe?) and proper lifetimes
         // TODO: extract this crate as game engine
 
+        // TODO: vsync toggle (switch present_mode to fifo)
         // TODO: move from vulkanalia to ash to make use of imgui ash backend
         // TODO: render graph, automatic creation of screen sized textures
         // TODO: deferred deallocation (will run after FRAMES_IN_FLIGHT + 1 frames)
@@ -422,8 +423,11 @@ impl<'a> Application<'a> {
         // TODO: imgui
         // TODO: game gui framework
         // TODO: physics
-        // TODO: config system
+        // TODO: config system - maybe use compile time perfect (almost) string hash
         // TODO: keyboard/mouse input system
+        // TODO: proper resource loading - gltf to internal format
+        // TODO: multithreading (probably handled by bevy_ecs if that is used)
+        // TODO: gpu timestamps for profiling, integration with imgui timeline
 
         const INTENSITY: f32 = 1.5;
         const COLOR: Vec3A = Vec3A::new(0.85, 0.65, 0.05);
