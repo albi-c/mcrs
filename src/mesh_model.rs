@@ -19,6 +19,19 @@ struct AABB {
     extent: Vec3,
 }
 
+impl AABB {
+    fn from_min_max(min: Vec3, max: Vec3) -> Self {
+        Self {
+            center: min.midpoint(max),
+            extent: (max - min) * 0.5,
+        }
+    }
+
+    fn to_min_max(self) -> (Vec3, Vec3) {
+        (self.center - self.extent, self.center + self.extent)
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
 struct Vertex {
@@ -96,8 +109,10 @@ struct MeshData {
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 struct ModelPart {
     model: gpu::DevicePointer,  // Model
+    aabb: AABB,
     meshlet_offset: u32,
     meshlet_count: u32,
+    _padding: [u32; 2],
 }
 
 #[multi_allocation]
@@ -158,9 +173,12 @@ impl<'a> MeshModels<'a> {
         })?;
 
         alloc.meshlet_transforms.host_mut()[0] = Mat4::IDENTITY;
+
+        let mut model_min_coord = Vec3::INFINITY;
+        let mut model_max_coord = Vec3::NEG_INFINITY;
         for (i, meshlet) in meshlets.meshlets.iter().enumerate() {
             // TODO: per meshlet optimization
-            // TODO: AABB per model part, proper clustering with meshopt
+            // TODO: cluster into model parts with meshopt
 
             let mut vertices = [bytemuck::zeroed(); 64];
             let mut triangles = [0; 128];
@@ -178,19 +196,17 @@ impl<'a> MeshModels<'a> {
                     normal: vert.3,
                 };
             }
+
+            model_min_coord = model_min_coord.min(min_coord);
+            model_max_coord = model_max_coord.max(max_coord);
+
             for j in 0..meshlet.triangle_count as usize {
                 let tri = &meshlets.triangles[meshlet.triangle_offset as usize + 3 * j..][..3];
                 triangles[j] = u32::from_le_bytes([tri[0], tri[1], tri[2], 0]);
             }
 
-            let center = max_coord.midpoint(min_coord);
-            let extent = (max_coord - min_coord) * 0.5;
-
             alloc.meshlet_infos.host_mut()[i] = MeshletInfo {
-                aabb: AABB {
-                    center,
-                    extent,
-                },
+                aabb: AABB::from_min_max(min_coord, max_coord),
                 transform: alloc.meshlet_transforms.device().add_typed::<Mat4>(0),
                 vertex_count: meshlet.vertex_count as u8,
                 triangle_count: meshlet.triangle_count as u8,
@@ -209,11 +225,8 @@ impl<'a> MeshModels<'a> {
             meshlet_infos: alloc.meshlet_infos.device(),
             transform: alloc.model_transforms.device().add_typed::<Mat4>(0),
             meshlet_count: meshlets.len() as u32,
-            flags: ModelFlags::empty(),
-            aabb: AABB {
-                center: Vec3::ZERO,
-                extent: Vec3::ZERO,
-            },
+            flags: ModelFlags::EnableCulling,
+            aabb: AABB::from_min_max(model_min_coord, model_max_coord),
             _padding: [0u32, 2],
         };
         for i in 0..model_parts {
@@ -223,10 +236,21 @@ impl<'a> MeshModels<'a> {
             } else {
                 MODEL_PART_SIZE
             } as u32;
+
+            let mut min_bound = Vec3::INFINITY;
+            let mut max_bound = Vec3::NEG_INFINITY;
+            for i in offset..offset + count {
+                let (min, max) = alloc.meshlet_infos.host()[i as usize].aabb.to_min_max();
+                min_bound = min_bound.min(min);
+                max_bound = max_bound.max(max);
+            }
+
             alloc.model_parts.host_mut()[i] = ModelPart {
                 model: alloc.models.device().add_typed::<Model>(0),
+                aabb: AABB::from_min_max(min_bound, max_bound),
                 meshlet_offset: offset,
                 meshlet_count: count,
+                _padding: [0u32; 2],
             };
         }
 

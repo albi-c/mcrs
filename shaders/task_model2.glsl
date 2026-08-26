@@ -26,8 +26,10 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Mes
 // TODO: AABB per model part, proper clustering with meshopt
 struct ModelPart {
     MeshDataModel model;
+    AABB aabb;
     uint meshletOffset;
     uint meshletCount;
+    uint _padding[2];
 };
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshDataModelParts {
@@ -64,7 +66,7 @@ void main() {
     if ((m.flags & 0x02) != 0) {
         bool inFrustum;
         if (subgroupElect()) {
-            inFrustum = checkFrustum(d.frustum, m.aabb, modelTransform);
+            inFrustum = checkFrustum(d.frustum, mp.aabb, modelTransform);
         }
         if (!subgroupBroadcastFirst(inFrustum)) {
             return;
