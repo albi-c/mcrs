@@ -1,35 +1,12 @@
 #version 450
 
 #include "common.glsl"
-#include "common_model2.glsl"
+#include "common_model2_tm.glsl"
+#include "common_model2_ct.glsl"
 
 layout(local_size_x = MODEL_PART_SIZE, local_size_y = 1, local_size_z = 1) in;
 
 taskPayloadSharedEXT Task OUT;
-
-// --- 64 bytes
-struct Model {
-    MeshDataModelMeshlets meshlets;
-    MeshDataModelMeshletInfos meshletInfos;
-    MeshDataTransform transform;
-    uint meshletCount;
-    // bit 0: disable rendering, bit 1: enable frustum culling
-    uint flags;
-    AABB aabb;
-    uint _padding[2];
-};
-
-layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshDataModel {
-    Model model;
-};
-
-struct ModelPart {
-    MeshDataModel model;
-    MeshDataTransform transform;
-    AABB aabb;
-    uint meshletOffset;
-    uint meshletCount;
-};
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshDataModelParts {
     ModelPart data[];
@@ -49,8 +26,6 @@ layout(std430, push_constant) uniform Data {
 } data;
 
 shared uint g_meshletOutputIndex;
-shared bool g_inFrustum;
-shared bool g_skipPerMeshletFrustum;
 
 void main() {
     MeshData d = data.mesh;
@@ -58,32 +33,15 @@ void main() {
     if (gl_LocalInvocationIndex >= mp.meshletCount) {
         return;
     }
-    Model m = mp.model.model;
-
-    if ((m.flags & 0x01) != 0) {
-        return;
-    }
+    MeshletInfo mi = mp.meshletInfos.data[mp.meshletOffset + gl_LocalInvocationIndex];
     mat4 modelTransform = mp.transform.transform;
-    if ((m.flags & 0x02) != 0) {
-        if (gl_LocalInvocationIndex == 0) {
-            bool completelyInFrustum;
-            bool inFrustum = checkFrustumAndFullyInside(d.frustum, mp.aabb, modelTransform, completelyInFrustum);
-            g_inFrustum = inFrustum;
-            g_skipPerMeshletFrustum = completelyInFrustum;
-        }
-        memoryBarrierShared();
-        if (!g_inFrustum) {
-            return;
-        }
-    }
 
-    MeshletInfo mi = m.meshletInfos.data[mp.meshletOffset + gl_LocalInvocationIndex];
-
+    // TODO: cone culling, DO NOT SKIP if mp.flags & 0x01 is set, that only applies to frustum culling
     bool alive = true;
     if ((mi.flags & 0x01) != 0) {
         alive = false;
-    } else if (!g_skipPerMeshletFrustum && (mi.flags & 0x02) == 0) {
-        if (!checkFrustum(d.frustum, mi.aabb, modelTransform * mi.transform.transform)) {
+    } else if ((mp.flags & 0x01) == 0 && (mi.flags & 0x02) == 0) {
+        if (!checkFrustum(d.frustum, mi.aabb, modelTransform)) {
             alive = false;
         }
     }
@@ -108,8 +66,8 @@ void main() {
 
     if (gl_LocalInvocationIndex == 0) {
         OUT.model = modelTransform;
-        OUT.meshlets = m.meshlets;
-        OUT.meshletInfos = m.meshletInfos;
+        OUT.meshlets = mp.meshlets;
+        OUT.meshletInfos = mp.meshletInfos;
         OUT.meshletBase = mp.meshletOffset;
         EmitMeshTasksEXT(g_meshletOutputIndex, 1, 1);
     }

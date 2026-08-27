@@ -20,7 +20,7 @@ use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::{Bound, Index, IndexMut};
 use anyhow::Result;
-use bitflags::bitflags;
+use bitflags::{bitflags, Flags};
 use bytemuck::{Pod, Zeroable};
 use smallvec::{smallvec, SmallVec};
 use smart_default::SmartDefault;
@@ -218,10 +218,11 @@ bitflags! {
 pub struct HazardFlags(u32);
 bitflags! {
     impl HazardFlags : u32 {
-        const IndirectDrawArguments = 0x1;
-        const Descriptors = 0x2;
-        const DepthStencil = 0x4;
-        const AccelerationStructure = 0x8;
+        const IndirectDrawArguments = 0x01;
+        const Descriptors = 0x02;
+        const DepthStencil = 0x04;
+        const AccelerationStructure = 0x08;
+        const ShaderMemory = 0x10;
     }
 }
 
@@ -505,28 +506,28 @@ pub struct ViewDesc {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct DrawIndirectCommand {
-    vertex_count: u32,
-    instance_count: u32,
-    first_vertex: u32,
-    first_instance: u32,
+    pub vertex_count: u32,
+    pub instance_count: u32,
+    pub first_vertex: u32,
+    pub first_instance: u32,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct DrawIndexedIndirectCommand {
-    index_count: u32,
-    instance_count: u32,
-    first_index: u32,
-    vertex_offset: u32,
-    first_instance: u32,
+    pub index_count: u32,
+    pub instance_count: u32,
+    pub first_index: u32,
+    pub vertex_offset: u32,
+    pub first_instance: u32,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct DrawMeshTasksIndirectCommand {
-    group_count_x: u32,
-    group_count_y: u32,
-    group_count_z: u32,
+    pub group_count_x: u32,
+    pub group_count_y: u32,
+    pub group_count_z: u32,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]
@@ -1141,6 +1142,10 @@ impl<'a> CommandBuffer<'a> {
                 dst_access |= vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR
                     | vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR;
             }
+            if hazards.contains(HazardFlags::ShaderMemory) {
+                src_access |= vk::AccessFlags2::SHADER_WRITE;
+                dst_access |= vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::SHADER_WRITE;
+            }
             (src_access, dst_access)
         };
 
@@ -1711,8 +1716,13 @@ impl Gpu {
 
     fn device_addr_to_buffer_offset(&self, addr: DevicePointer) -> Option<(vk::Buffer, vk::DeviceSize)> {
         let buffers = self.buffers.borrow();
-        let mut cur = buffers.lower_bound(Bound::Included(&addr.0));
-        if let Some((&base, &(buffer, size))) = cur.next() {
+        let cur = buffers.lower_bound(Bound::Included(&addr.0));
+        if let Some((&base, &(buffer, size))) = cur.peek_next() {
+            if base <= addr.0 && addr.0 < base + size {
+                return Some((buffer, addr.0 - base));
+            }
+        }
+        if let Some((&base, &(buffer, size))) = cur.peek_prev() {
             if base <= addr.0 && addr.0 < base + size {
                 return Some((buffer, addr.0 - base));
             }

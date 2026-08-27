@@ -1,7 +1,7 @@
 #version 450
 
 #include "common.glsl"
-#include "common_model2.glsl"
+#include "common_model2_tm.glsl"
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout(triangles, max_vertices = 64, max_primitives = 96) out;
@@ -77,13 +77,13 @@ void main() {
     if (gl_LocalInvocationIndex < mi.vertexCount) {
         Vertex v = IN.meshlets.data[meshletIndex].vertices[gl_LocalInvocationIndex];
 
-        vec4 worldPos = IN.model * mi.transform.transform * getVertexPosition(v);
+        vec4 worldPos = IN.model * getVertexPosition(v);
         gl_MeshVerticesEXT[gl_LocalInvocationIndex].gl_Position = d.viewProj * worldPos;
         outUvs[gl_LocalInvocationIndex] = getVertexUv(v);
         outNormals[gl_LocalInvocationIndex] = getVertexNormal(v);
         outMaterials[gl_LocalInvocationIndex] = d.materials.data[v.mat];
         outWorldPositions[gl_LocalInvocationIndex] = worldPos.xyz;
-        outDebugColors[gl_LocalInvocationIndex] = murmurHash11(meshletIndex);
+        outDebugColors[gl_LocalInvocationIndex] = (murmurHash11(meshletIndex) & ~0xff) + 4 * gl_LocalInvocationIndex;
     }
 
     if (gl_LocalInvocationIndex < mi.triangleCount) {

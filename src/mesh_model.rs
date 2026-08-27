@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::time::Instant;
 use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
@@ -65,11 +66,29 @@ bitflags! {
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 struct MeshletInfo {
     aabb: AABB,
-    transform: gpu::DevicePointer,  // Mat4
     vertex_count: u8,
     triangle_count: u8,
     flags: MeshletInfoFlags,
-    _padding: [u8; 13],
+    _padding: [u8; 5],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct LODChunk {
+    aabb: AABB,
+    meshlet_offset: u32,
+    meshlet_count: u16,
+    _padding: [u16; 1],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct LOD {
+    meshlets: gpu::DevicePointer,  // [Meshlet]
+    meshlet_infos: gpu::DevicePointer,  // [MeshletInfo]
+    chunks: gpu::DevicePointer,  // [LODChunk]
+    chunk_count: u32,
+    _padding: [u32; 1],
 }
 
 #[repr(transparent)]
@@ -80,19 +99,30 @@ bitflags! {
         const NoRender = 0x01;
         // ignores meshlet transforms, only uses model transform when adjusting AABB
         const EnableCulling = 0x02;
+        const EnableLODs = 0x04;
     }
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 struct Model {
-    meshlets: gpu::DevicePointer,  // [Meshlet]
-    meshlet_infos: gpu::DevicePointer,  // [MeshletInfo]
-    transform: gpu::DevicePointer,  // Mat4
-    meshlet_count: u32,
+    lods: gpu::DevicePointer,  // [LOD]
+    lod_count: u32,
     flags: ModelFlags,
     aabb: AABB,
     _padding: [u32; 2],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct CompData {
+    frustum: Frustum,
+    model_instances: gpu::DevicePointer,  // [ModelInstance]
+    model_parts: gpu::DevicePointer,  // [ModelPart]
+    part_count: gpu::DevicePointer,  // gpu::DrawMeshTasksIndirectCommand - only X count is written
+    max_model_part_count: u32,
+    _padding: [u32; 1],
+    camera_pos: Vec3A,
 }
 
 #[repr(C)]
@@ -108,31 +138,48 @@ struct MeshData {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 struct ModelPart {
+    meshlets: gpu::DevicePointer,  // [Meshlet]
+    meshlet_infos: gpu::DevicePointer,  // [MeshletInfo]
+    transform: gpu::DevicePointer,  // Mat4
+    meshlet_offset: u32,
+    meshlet_count: u16,
+    // used for communication between compute and task shader, meanings do not matter here
+    flags: u16,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct ModelInstance {
     model: gpu::DevicePointer,  // Model
     transform: gpu::DevicePointer,  // Mat4
-    aabb: AABB,
-    meshlet_offset: u32,
-    meshlet_count: u32,
 }
 
 #[multi_allocation]
 struct MultiAlloc {
-    meshlet_transforms: Mat4,
     meshlet_infos: MeshletInfo,
     meshlets: Meshlet,
-    model_transforms: Mat4,
+    lod_chunks: LODChunk,
+    lods: LOD,
     models: Model,
+    instance_transforms: Mat4,
+    model_instances: ModelInstance,
+}
+
+#[multi_allocation]
+struct MultiAllocGpu {
     model_parts: ModelPart,
+    part_count: gpu::DrawMeshTasksIndirectCommand,
 }
 
 pub struct MeshModels<'a> {
-    shader_task: gpu::Shader<'a>,
-    shader_mesh: gpu::Shader<'a>,
+    shader_comp2: gpu::Shader<'a>,
+    shader_reset_comp2: gpu::Shader<'a>,
     shader_task2: gpu::Shader<'a>,
     shader_mesh2: gpu::Shader<'a>,
     shader_frag: gpu::Shader<'a>,
 
     alloc: MultiAlloc<'a>,
+    alloc_gpu: MultiAllocGpu<'a>,
 }
 
 fn get_frustum(view_proj: &Mat4) -> Frustum {
@@ -153,7 +200,8 @@ const MODEL_PART_SIZE: usize = 64;
 
 impl<'a> MeshModels<'a> {
     pub fn from_gltf_scene(gpu: &'a gpu::Gpu, scene: &Scene, repeat: usize, offset: Vec2) -> anyhow::Result<Self> {
-        // TODO: !! levels of detail with dynamic selection in task shader
+        // TODO: level of detail selection
+        // TODO: incorrect output for fullyInside - always returns true
         // TODO: cone culling
 
         let mut offsets = vec![];
@@ -169,140 +217,207 @@ impl<'a> MeshModels<'a> {
             .map(|v| Vec3::from_array(v.0.map(f16::to_f32))).collect::<Vec<_>>();
         let vertex_adapter = meshopt::VertexDataAdapter::new(
             bytemuck::cast_slice(&vertex_positions), 12, 0)?;
-        let meshlets = meshopt::build_meshlets(
-            scene.indices.host(), &vertex_adapter, 64, 96, 0.0);
 
-        let model_parts = meshlets.len().div_ceil(MODEL_PART_SIZE);
+        let mut levels = vec![scene.indices.host().to_owned()];
+        for i in 0..12 {
+            let prev_indices = levels.last().unwrap().as_slice();
+            let new_indices = meshopt::simplify(
+                &prev_indices, &vertex_adapter, prev_indices.len() / 2,
+                0.02, meshopt::SimplifyOptions::None, None);
+            let ratio = new_indices.len() as f64 / prev_indices.len() as f64;
+            if ratio > 0.8 {
+                break;
+            }
+            println!("simplified [{}]: {}, prev {}", i + 1, new_indices.len(), prev_indices.len());
+            levels.push(new_indices);
+            if ratio > 0.6 {
+                break;
+            }
+        }
+
+        let level_meshlets = levels.iter()
+            .map(|indices| meshopt::build_meshlets(
+                &indices, &vertex_adapter, 64, 96, 0.0))
+            .collect::<Vec<_>>();
+        let total_meshlets = level_meshlets.iter().map(|m| m.len()).sum::<usize>();
+        let level_model_parts = level_meshlets.iter().map(|m| m.len().div_ceil(MODEL_PART_SIZE)).collect::<Vec<_>>();
+
         let mut alloc = MultiAlloc::new(gpu, MultiAllocCounts {
-            meshlet_transforms: 1,
-            meshlet_infos: meshlets.len(),
-            meshlets: meshlets.len(),
-            model_transforms: repeat * repeat,
+            meshlet_infos: total_meshlets,
+            meshlets: total_meshlets,
+            lod_chunks: level_model_parts.iter().sum(),
+            lods: level_meshlets.len(),
             models: 1,
-            model_parts: model_parts * repeat * repeat,
+            instance_transforms: repeat * repeat,
+            model_instances: repeat * repeat,
         })?;
-
-        alloc.meshlet_transforms.host_mut()[0] = Mat4::IDENTITY;
+        let alloc_gpu = MultiAllocGpu::new_mem(gpu, MultiAllocGpuCounts {
+            model_parts: repeat * repeat * level_model_parts[0],
+            part_count: 1,
+        }, gpu::Memory::Gpu)?;
 
         let mut model_min_coord = Vec3::INFINITY;
         let mut model_max_coord = Vec3::NEG_INFINITY;
-        for (i, meshlet) in meshlets.meshlets.iter().enumerate() {
-            let mut vertices = [bytemuck::zeroed(); 64];
-            let mut triangles = [0; 128];
-            let mut min_coord = Vec3::INFINITY;
-            let mut max_coord = Vec3::NEG_INFINITY;
-            for j in 0..meshlet.vertex_count as usize {
-                let idx = meshlets.vertices[meshlet.vertex_offset as usize + j] as usize;
-                min_coord = min_coord.min(vertex_positions[idx]);
-                max_coord = max_coord.max(vertex_positions[idx]);
-                let vert = scene.vertices.host()[idx];
-                vertices[j] = Vertex {
-                    pos: vert.0,
-                    mat: vert.1,
-                    uv: vert.2,
-                    normal: vert.3,
+        let mut meshlet_offset = 0;
+        let mut chunk_offset = 0;
+        for (lod, meshlets) in level_meshlets.iter().enumerate() {
+            for (i, meshlet) in meshlets.meshlets.iter().enumerate() {
+                let mut vertices = [bytemuck::zeroed(); 64];
+                let mut triangles = [0; 128];
+                let mut min_coord = Vec3::INFINITY;
+                let mut max_coord = Vec3::NEG_INFINITY;
+                for j in 0..meshlet.vertex_count as usize {
+                    let idx = meshlets.vertices[meshlet.vertex_offset as usize + j] as usize;
+                    min_coord = min_coord.min(vertex_positions[idx]);
+                    max_coord = max_coord.max(vertex_positions[idx]);
+                    let vert = scene.vertices.host()[idx];
+                    vertices[j] = Vertex {
+                        pos: vert.0,
+                        mat: vert.1,
+                        uv: vert.2,
+                        normal: vert.3,
+                    };
+                }
+
+                model_min_coord = model_min_coord.min(min_coord);
+                model_max_coord = model_max_coord.max(max_coord);
+
+                for j in 0..meshlet.triangle_count as usize {
+                    let tri = &meshlets.triangles[meshlet.triangle_offset as usize + 3 * j..][..3];
+                    triangles[j] = u32::from_le_bytes([tri[0], tri[1], tri[2], 0]);
+                }
+
+                alloc.meshlet_infos.host_mut()[meshlet_offset + i] = MeshletInfo {
+                    aabb: AABB::from_min_max(min_coord, max_coord),
+                    vertex_count: meshlet.vertex_count as u8,
+                    triangle_count: meshlet.triangle_count as u8,
+                    flags: MeshletInfoFlags::empty(),
+                    _padding: [0u8; 5],
+                };
+                alloc.meshlets.host_mut()[meshlet_offset + i] = Meshlet {
+                    vertices,
+                    triangles,
                 };
             }
 
-            model_min_coord = model_min_coord.min(min_coord);
-            model_max_coord = model_max_coord.max(max_coord);
+            let part_count = level_model_parts[lod];
 
-            for j in 0..meshlet.triangle_count as usize {
-                let tri = &meshlets.triangles[meshlet.triangle_offset as usize + 3 * j..][..3];
-                triangles[j] = u32::from_le_bytes([tri[0], tri[1], tri[2], 0]);
-            }
-
-            alloc.meshlet_infos.host_mut()[i] = MeshletInfo {
-                aabb: AABB::from_min_max(min_coord, max_coord),
-                transform: alloc.meshlet_transforms.device().add_typed::<Mat4>(0),
-                vertex_count: meshlet.vertex_count as u8,
-                triangle_count: meshlet.triangle_count as u8,
-                flags: MeshletInfoFlags::empty(),
-                _padding: [0u8; 13],
-            };
-            alloc.meshlets.host_mut()[i] = Meshlet {
-                vertices,
-                triangles,
-            };
-        }
-
-        for &(i, offset) in &offsets {
-            alloc.model_transforms.host_mut()[i] = Mat4::from_translation(Vec3::new(offset.x, 0.0, offset.y));
-        }
-        alloc.model_transforms.host_mut().sort_unstable_by_key(|m| (m.z_axis.truncate().length() * 16384.0) as isize);
-
-        alloc.models.host_mut()[0] = Model {
-            meshlets: alloc.meshlets.device(),
-            meshlet_infos: alloc.meshlet_infos.device(),
-            transform: alloc.model_transforms.device().add_typed::<Mat4>(0),
-            meshlet_count: meshlets.len() as u32,
-            flags: ModelFlags::EnableCulling,
-            aabb: AABB::from_min_max(model_min_coord, model_max_coord),
-            _padding: [0u32, 2],
-        };
-        for &(j, _offset) in &offsets {
-            for i in 0..model_parts {
+            for i in 0..part_count {
                 let offset = (i * MODEL_PART_SIZE) as u32;
-                let count = if i == model_parts - 1 {
-                    meshlets.len() - (model_parts - 1) * MODEL_PART_SIZE
+                let count = if i == part_count - 1 {
+                    level_meshlets[lod].len() - (part_count - 1) * MODEL_PART_SIZE
                 } else {
                     MODEL_PART_SIZE
                 } as u32;
 
                 let mut min_bound = Vec3::INFINITY;
                 let mut max_bound = Vec3::NEG_INFINITY;
-                for i in offset..offset + count {
-                    let (min, max) = alloc.meshlet_infos.host()[i as usize].aabb.to_min_max();
+                for j in offset..offset + count {
+                    let (min, max) = alloc.meshlet_infos.host()[meshlet_offset + j as usize].aabb.to_min_max();
                     min_bound = min_bound.min(min);
                     max_bound = max_bound.max(max);
                 }
 
-                alloc.model_parts.host_mut()[i * repeat * repeat + j] = ModelPart {
-                    model: alloc.models.device().add_typed::<Model>(0),
-                    transform: alloc.model_transforms.device().add_typed::<Mat4>(j),
+                alloc.lod_chunks.host_mut()[chunk_offset + i] = LODChunk {
                     aabb: AABB::from_min_max(min_bound, max_bound),
                     meshlet_offset: offset,
-                    meshlet_count: count,
+                    meshlet_count: count.try_into().expect("meshlet count does not fit into u16"),
+                    _padding: [0u16; 1],
                 };
             }
+
+            alloc.lods.host_mut()[lod] = LOD {
+                meshlets: alloc.meshlets.device().add_typed::<Meshlet>(meshlet_offset),
+                meshlet_infos: alloc.meshlet_infos.device().add_typed::<MeshletInfo>(meshlet_offset),
+                chunks: alloc.lod_chunks.device().add_typed::<LODChunk>(chunk_offset),
+                chunk_count: part_count as u32,
+                _padding: [0u32; 1],
+            };
+
+            meshlet_offset += meshlets.len();
+            chunk_offset += part_count;
         }
+
+        alloc.models.host_mut()[0] = Model {
+            lods: alloc.lods.device(),
+            lod_count: alloc.lods.len() as u32,
+            flags: ModelFlags::EnableCulling,
+            aabb: AABB::from_min_max(model_min_coord, model_max_coord),
+            _padding: [0u32; 2],
+        };
+
+        for &(i, offset) in &offsets {
+            alloc.instance_transforms.host_mut()[i] = Mat4::from_translation(Vec3::new(offset.x, 0.0, offset.y));
+            alloc.model_instances.host_mut()[i] = ModelInstance {
+                model: alloc.models.device().add_typed::<Model>(0),
+                transform: alloc.instance_transforms.device().add_typed::<Mat4>(i),
+            };
+        }
+        alloc.instance_transforms.host_mut().sort_unstable_by_key(|m| (m.z_axis.truncate().length() * 16384.0) as isize);
 
         println!("Clusterized scene in {:.03} seconds", start_time.elapsed().as_secs_f32());
 
         Ok(Self {
-            shader_task: load_shader("shaders/task_model.glsl", gpu::ShaderStage::Task, gpu)?,
-            shader_mesh: load_shader("shaders/mesh_model.glsl", gpu::ShaderStage::MeshWithTask, gpu)?,
+            shader_comp2: load_shader("shaders/comp_model2.glsl", gpu::ShaderStage::Compute, gpu)?,
+            shader_reset_comp2: load_shader("shaders/comp_model2_reset.glsl", gpu::ShaderStage::Compute, gpu)?,
             shader_task2: load_shader("shaders/task_model2.glsl", gpu::ShaderStage::Task, gpu)?,
             shader_mesh2: load_shader("shaders/mesh_model2.glsl", gpu::ShaderStage::MeshWithTask, gpu)?,
             shader_frag: load_shader("shaders/frag.glsl", gpu::ShaderStage::Pixel, gpu)?,
 
             alloc,
+            alloc_gpu,
         })
+    }
+
+    pub fn prepare_render(&self, arena: &gpu::Arena<'a>, cmd_buf: &mut gpu::CommandBuffer<'a>,
+                          view_proj: &Mat4, camera_pos: Vec3A) -> anyhow::Result<()> {
+        // TODO: extreme frame time fluctuations
+
+        cmd_buf.bind_compute_shader(&self.shader_reset_comp2);
+        cmd_buf.dispatch(self.alloc_gpu.part_count.device(), (1, 1, 1));
+
+        cmd_buf.barrier(gpu::Stage::Compute, gpu::Stage::Compute, gpu::HazardFlags::ShaderMemory);
+
+        let comp_data = arena.alloc_data(&[CompData {
+            frustum: get_frustum(view_proj),
+            model_instances: self.alloc.model_instances.device(),
+            model_parts: self.alloc_gpu.model_parts.device(),
+            part_count: self.alloc_gpu.part_count.device(),
+            max_model_part_count: self.alloc_gpu.model_parts.len() as u32,
+            _padding: [0u32; 1],
+            camera_pos,
+        }])?;
+
+        cmd_buf.bind_compute_shader(&self.shader_comp2);
+        cmd_buf.dispatch(
+            comp_data.device(), (self.alloc.model_instances.len() as u32, 1, 1));
+
+        cmd_buf.barrier(
+            gpu::Stage::Compute,
+            gpu::Stage::TaskShader,
+            gpu::HazardFlags::ShaderMemory);
+        cmd_buf.barrier(
+            gpu::Stage::Compute,
+            gpu::Stage::DrawIndirect,
+            gpu::HazardFlags::IndirectDrawArguments);
+
+        Ok(())
     }
 
     pub fn render(&self, arena: &gpu::Arena<'a>, cmd_buf: &mut gpu::CommandBuffer<'a>,
                   pixel_data: gpu::DevicePointer, materials: gpu::DevicePointer,
-                  view_proj: &Mat4, old_shaders: bool, camera_pos: Vec3A) -> anyhow::Result<()> {
-        let model_pointers = arena.alloc_data(&[
-            self.alloc.models.device().add_typed::<Model>(0),
-        ])?;
+                  view_proj: &Mat4, camera_pos: Vec3A) -> anyhow::Result<()> {
         let mesh_data = arena.alloc_data(&[MeshData {
             view_proj: *view_proj,
             frustum: get_frustum(view_proj),
-            model_parts: if old_shaders { model_pointers.device() } else { self.alloc.model_parts.device() },
+            model_parts: self.alloc_gpu.model_parts.device(),
             materials,
             camera_pos,
         }])?;
 
-        if old_shaders {
-            cmd_buf.bind_shaders([&self.shader_task, &self.shader_mesh, &self.shader_frag]);
-            cmd_buf.draw_meshlets(
-                mesh_data.device(), pixel_data, (self.alloc.models.len() as u32, 1, 1));
-        } else {
-            cmd_buf.bind_shaders([&self.shader_task2, &self.shader_mesh2, &self.shader_frag]);
-            cmd_buf.draw_meshlets(
-                mesh_data.device(), pixel_data, (self.alloc.model_parts.len() as u32, 1, 1));
-        }
+        cmd_buf.bind_shaders([&self.shader_task2, &self.shader_mesh2, &self.shader_frag]);
+        cmd_buf.draw_meshlets_indirect(
+            mesh_data.device(), pixel_data, self.alloc_gpu.part_count.device(), 1, 12);
 
         Ok(())
     }

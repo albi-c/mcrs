@@ -1,4 +1,6 @@
-#extension GL_EXT_mesh_shader : require
+#ifndef _COMMON_MODEL_2
+#define _COMMON_MODEL_2
+
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_ballot : require
 
@@ -25,15 +27,14 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Mes
     mat4 transform;
 };
 
-// --- 48 bytes
+// --- 32 bytes
 struct MeshletInfo {
     AABB aabb;
-    MeshDataTransform transform;
     uint8_t vertexCount;
     uint8_t triangleCount;
     // bit 0: disable rendering, bit 1: disable frustum culling, bit 2: disable rendering in depth prepass
     uint8_t flags;
-    uint8_t _padding[13];
+    uint8_t _padding[5];
 };
 
 // --- 1536 bytes
@@ -52,14 +53,6 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Mes
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshDataModelMeshletInfos {
     MeshletInfo data[];
-};
-
-struct Task {
-    mat4 model;
-    MeshDataModelMeshlets meshlets;
-    MeshDataModelMeshletInfos meshletInfos;
-    uint8_t meshletOffsets[MODEL_PART_SIZE];
-    uint meshletBase;
 };
 
 struct Frustum {
@@ -114,3 +107,5 @@ bool checkFrustumAndFullyInside(in Frustum f, in AABB aabb, in mat4 modelTransfo
     fullyInside = true;
     return true;
 }
+
+#endif

@@ -765,6 +765,11 @@ impl<'a> Application<'a> {
             Some(&self.accel_struct_descriptors),
         );
 
+        if !self.get_key(KeyCode::KeyM) {
+            self.mesh_models.prepare_render(
+                arena, &mut command_buffer, &mat_vp, self.camera_pos.to_vec3a())?;
+        }
+
         let color_target = gpu::Target {
             view: self.textures.post_color.view()?,
             load_op: gpu::Load::Clear,
@@ -800,7 +805,7 @@ impl<'a> Application<'a> {
             self.mesh_models.render(
                 arena, &mut command_buffer, pixel_data.device(),
                 self.gltf.scenes[0].materials.device(), &mat_vp,
-                self.get_key(KeyCode::KeyJ), self.camera_pos.to_vec3a())?;
+                self.camera_pos.to_vec3a())?;
         }
 
         command_buffer.end_render_pass();

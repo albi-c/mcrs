@@ -70,7 +70,10 @@ pub fn multi_allocation(_attr: proc_macro::TokenStream, input: proc_macro::Token
 
         impl<'a> #ident<'a> {
             #vis fn new(gpu: &'a gpu::Gpu, lengths: impl Into<[usize; #item_count]>) -> anyhow::Result<Self> {
-                let __allocation = gpu::MultiAllocation::<(#(#item_types,)*)>::new(gpu, lengths.into())?;
+                Self::new_mem(gpu, lengths, gpu::Memory::Default)
+            }
+            #vis fn new_mem(gpu: &'a gpu::Gpu, lengths: impl Into<[usize; #item_count]>, memory: gpu::Memory) -> anyhow::Result<Self> {
+                let __allocation = gpu::MultiAllocation::<(#(#item_types,)*)>::new_mem(gpu, lengths.into(), memory)?;
                 #(#generate_ma)*
                 Ok(Self {
                     __allocation: __allocation.into_inner(),
