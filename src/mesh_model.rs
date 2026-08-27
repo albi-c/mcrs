@@ -1,7 +1,7 @@
 use std::time::Instant;
 use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec3, Vec3A, Vec4};
+use glam::{Mat4, Vec2, Vec3, Vec3A, Vec4};
 use half::f16;
 use gpu::{MemoryAllocation, MemoryAllocator};
 use macros::multi_allocation;
@@ -109,10 +109,10 @@ struct MeshData {
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 struct ModelPart {
     model: gpu::DevicePointer,  // Model
+    transform: gpu::DevicePointer,  // Mat4
     aabb: AABB,
     meshlet_offset: u32,
     meshlet_count: u32,
-    _padding: [u32; 2],
 }
 
 #[multi_allocation]
@@ -152,7 +152,17 @@ fn get_frustum(view_proj: &Mat4) -> Frustum {
 const MODEL_PART_SIZE: usize = 64;
 
 impl<'a> MeshModels<'a> {
-    pub fn from_gltf_scene(gpu: &'a gpu::Gpu, scene: &Scene) -> anyhow::Result<Self> {
+    pub fn from_gltf_scene(gpu: &'a gpu::Gpu, scene: &Scene, repeat: usize, offset: Vec2) -> anyhow::Result<Self> {
+        // TODO: !! levels of detail with dynamic selection in task shader
+        // TODO: cone culling
+
+        let mut offsets = vec![];
+        for y in 0..repeat {
+            for x in 0..repeat {
+                offsets.push((x + repeat * y, offset * Vec2::new(x as f32, y as f32)));
+            }
+        }
+
         let start_time = Instant::now();
 
         let vertex_positions = scene.vertices.host().iter()
@@ -167,9 +177,9 @@ impl<'a> MeshModels<'a> {
             meshlet_transforms: 1,
             meshlet_infos: meshlets.len(),
             meshlets: meshlets.len(),
-            model_transforms: 1,
+            model_transforms: repeat * repeat,
             models: 1,
-            model_parts,
+            model_parts: model_parts * repeat * repeat,
         })?;
 
         alloc.meshlet_transforms.host_mut()[0] = Mat4::IDENTITY;
@@ -177,9 +187,6 @@ impl<'a> MeshModels<'a> {
         let mut model_min_coord = Vec3::INFINITY;
         let mut model_max_coord = Vec3::NEG_INFINITY;
         for (i, meshlet) in meshlets.meshlets.iter().enumerate() {
-            // TODO: per meshlet optimization
-            // TODO: cluster into model parts with meshopt
-
             let mut vertices = [bytemuck::zeroed(); 64];
             let mut triangles = [0; 128];
             let mut min_coord = Vec3::INFINITY;
@@ -219,7 +226,11 @@ impl<'a> MeshModels<'a> {
             };
         }
 
-        alloc.model_transforms.host_mut()[0] = Mat4::IDENTITY;
+        for &(i, offset) in &offsets {
+            alloc.model_transforms.host_mut()[i] = Mat4::from_translation(Vec3::new(offset.x, 0.0, offset.y));
+        }
+        alloc.model_transforms.host_mut().sort_unstable_by_key(|m| (m.z_axis.truncate().length() * 16384.0) as isize);
+
         alloc.models.host_mut()[0] = Model {
             meshlets: alloc.meshlets.device(),
             meshlet_infos: alloc.meshlet_infos.device(),
@@ -229,29 +240,31 @@ impl<'a> MeshModels<'a> {
             aabb: AABB::from_min_max(model_min_coord, model_max_coord),
             _padding: [0u32, 2],
         };
-        for i in 0..model_parts {
-            let offset = (i * MODEL_PART_SIZE) as u32;
-            let count = if i == model_parts - 1 {
-                meshlets.len() - (model_parts - 1) * MODEL_PART_SIZE
-            } else {
-                MODEL_PART_SIZE
-            } as u32;
+        for &(j, _offset) in &offsets {
+            for i in 0..model_parts {
+                let offset = (i * MODEL_PART_SIZE) as u32;
+                let count = if i == model_parts - 1 {
+                    meshlets.len() - (model_parts - 1) * MODEL_PART_SIZE
+                } else {
+                    MODEL_PART_SIZE
+                } as u32;
 
-            let mut min_bound = Vec3::INFINITY;
-            let mut max_bound = Vec3::NEG_INFINITY;
-            for i in offset..offset + count {
-                let (min, max) = alloc.meshlet_infos.host()[i as usize].aabb.to_min_max();
-                min_bound = min_bound.min(min);
-                max_bound = max_bound.max(max);
+                let mut min_bound = Vec3::INFINITY;
+                let mut max_bound = Vec3::NEG_INFINITY;
+                for i in offset..offset + count {
+                    let (min, max) = alloc.meshlet_infos.host()[i as usize].aabb.to_min_max();
+                    min_bound = min_bound.min(min);
+                    max_bound = max_bound.max(max);
+                }
+
+                alloc.model_parts.host_mut()[i * repeat * repeat + j] = ModelPart {
+                    model: alloc.models.device().add_typed::<Model>(0),
+                    transform: alloc.model_transforms.device().add_typed::<Mat4>(j),
+                    aabb: AABB::from_min_max(min_bound, max_bound),
+                    meshlet_offset: offset,
+                    meshlet_count: count,
+                };
             }
-
-            alloc.model_parts.host_mut()[i] = ModelPart {
-                model: alloc.models.device().add_typed::<Model>(0),
-                aabb: AABB::from_min_max(min_bound, max_bound),
-                meshlet_offset: offset,
-                meshlet_count: count,
-                _padding: [0u32; 2],
-            };
         }
 
         println!("Clusterized scene in {:.03} seconds", start_time.elapsed().as_secs_f32());

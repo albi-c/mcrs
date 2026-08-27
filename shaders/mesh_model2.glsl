@@ -63,7 +63,7 @@ uint murmurHash11(uint src) {
 
 void main() {
     // TODO: calculate tangent and bitangent for normal mapping
-    // TODO: move material indexing into fragment shader and later into postprocessing when doing deferred
+    // TODO: move material indexing into fragment shader
 
     MeshData d = data.mesh;
 

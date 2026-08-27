@@ -57,7 +57,7 @@ pub fn multi_allocation(_attr: proc_macro::TokenStream, input: proc_macro::Token
             #(#pairs,)*
         }
 
-        #[derive(Default, Copy, Clone)]
+        #[derive(Default, Copy, Clone, Debug)]
         #vis struct #count_struct_ident {
             #(pub #item_names: usize,)*
         }

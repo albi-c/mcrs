@@ -403,9 +403,6 @@ impl<'a> Application<'a> {
         let tl_as = create_top_level_as(gpu, &queue, &bl_as)?;
         tl_as.descriptor(&mut accel_struct_descriptors[0]);
 
-        // TODO: refactor gpu crate to use (reference counting - maybe?) and proper lifetimes
-        // TODO: extract this crate as game engine
-
         // TODO: vsync toggle (switch present_mode to fifo)
         // TODO: move from vulkanalia to ash to make use of imgui ash backend
         // TODO: render graph, automatic creation of screen sized textures
@@ -559,7 +556,8 @@ impl<'a> Application<'a> {
             sampler_descriptors,
             accel_struct_descriptors,
 
-            mesh_models: MeshModels::from_gltf_scene(gpu, &gltf.scenes[0])?,
+            mesh_models: MeshModels::from_gltf_scene(
+                gpu, &gltf.scenes[0], 4, Vec2::new(32.0, 20.0))?,
 
             gltf,
             lights,
