@@ -60,7 +60,7 @@ struct Frustum {
     vec4 planes[5];
 };
 
-void transformAABB(in Frustum f, in AABB aabb, in mat4 modelTransform, out vec3 center, out vec3 extent) {
+void transformAABB(in AABB aabb, in mat4 modelTransform, out vec3 center, out vec3 extent) {
     center = (modelTransform * vec4(aabb.data[0], aabb.data[1], aabb.data[2], 1.0)).xyz;
     extent = mat3(
         abs(modelTransform[0].xyz),
@@ -78,7 +78,7 @@ bool isOutsidePlane(vec4 plane, vec3 center, vec3 extent) {
 bool checkFrustum(in Frustum f, in AABB aabb, in mat4 modelTransform) {
     vec3 center;
     vec3 extent;
-    transformAABB(f, aabb, modelTransform, center, extent);
+    transformAABB(aabb, modelTransform, center, extent);
     for (uint i = 0; i < 5; i++) {
         if (isOutsidePlane(f.planes[i], center, extent)) {
             return false;
@@ -90,7 +90,7 @@ bool checkFrustum(in Frustum f, in AABB aabb, in mat4 modelTransform) {
 bool checkFrustumAndFullyInside(in Frustum f, in AABB aabb, in mat4 modelTransform, out bool fullyInside) {
     vec3 center;
     vec3 extent;
-    transformAABB(f, aabb, modelTransform, center, extent);
+    transformAABB(aabb, modelTransform, center, extent);
     for (uint i = 0; i < 5; i++) {
         if (isOutsidePlane(f.planes[i], center, extent)) {
             return false;

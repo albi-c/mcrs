@@ -694,9 +694,11 @@ impl<'a> Application<'a> {
         let arena = self.get_frame_arena();
         arena.reset();
 
+        let fov = 100.0f32.to_radians();
+
         let view_size = gpu::SwapchainContext::get_window_size(ctx);
         let mat_perspective = glam::camera::rh::proj::vulkan::perspective_infinite(
-            100.0f32.to_radians(),
+            fov,
             view_size.0 as f32 / view_size.1 as f32,
             0.001f32,
         );
@@ -767,7 +769,8 @@ impl<'a> Application<'a> {
 
         if !self.get_key(KeyCode::KeyM) {
             self.mesh_models.prepare_render(
-                arena, &mut command_buffer, &mat_vp, self.camera_pos.to_vec3a())?;
+                arena, &mut command_buffer, &mat_vp, self.camera_pos.to_vec3a(),
+                ctx.get_window_size().1 as f32 / (fov * 0.5).tan())?;
         }
 
         let color_target = gpu::Target {

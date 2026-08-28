@@ -3,7 +3,9 @@
 #include "common.glsl"
 #include "common_model2_ct.glsl"
 
-layout(local_size_x = MODEL_PART_SIZE) in;
+const uint SIZE_X = 64;
+
+layout(local_size_x = SIZE_X) in;
 
 // --- 16 bytes
 struct ModelInstance {
@@ -32,19 +34,28 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Com
     CompDataPartCount partCount;
     uint maxModelPartCount;
     uint _padding;
-    vec4 cameraPos;
+    vec4 cameraPosAndViewport;
 };
 
 layout(std430, push_constant) uniform Data {
     CompData comp;
 } data;
 
-uint selectLOD(in Model model) {
+uint selectLOD(in Model model, in mat4 modelTransform, vec4 cameraPosAndViewport) {
     if ((model.flags & 0x04) == 0) {
         return 0;
     } else {
-        // TODO: calculate lod index
-        return 0;
+        vec3 cameraPos = cameraPosAndViewport.xyz;
+        float k = cameraPosAndViewport.w;
+
+        vec3 center;
+        vec3 extent;
+        transformAABB(model.aabb, modelTransform, center, extent);
+
+        float dist = length(cameraPos - center);
+        float radius = length(extent);
+
+        return uint(clamp((dist - radius) / (radius * 0.5), 0.0, float(model.lodCount - 1)));
     }
 }
 
@@ -73,7 +84,7 @@ void perWorkgroup(in CompData d) {
     } else {
         g_skipLodPartAABB = true;
     }
-    uint lodIndex = selectLOD(m);
+    uint lodIndex = selectLOD(m, transform, d.cameraPosAndViewport);
     g_lod = m.lods.data[lodIndex];
     g_transform = transform;
     g_transformPtr = mi.transform;
@@ -131,7 +142,7 @@ void main() {
     }
 
     LOD lod = g_lod;
-    for (uint baseChunk = 0; baseChunk < lod.chunkCount; baseChunk += MODEL_PART_SIZE) {
+    for (uint baseChunk = 0; baseChunk < lod.chunkCount; baseChunk += SIZE_X) {
         uint chunkIndex = baseChunk + gl_LocalInvocationIndex;
         if (chunkIndex >= lod.chunkCount) {
             return;

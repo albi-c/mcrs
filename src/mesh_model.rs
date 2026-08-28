@@ -1,4 +1,3 @@
-use std::cell::Cell;
 use std::time::Instant;
 use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
@@ -122,7 +121,7 @@ struct CompData {
     part_count: gpu::DevicePointer,  // gpu::DrawMeshTasksIndirectCommand - only X count is written
     max_model_part_count: u32,
     _padding: [u32; 1],
-    camera_pos: Vec3A,
+    camera_pos_and_viewport: Vec4,
 }
 
 #[repr(C)]
@@ -341,7 +340,7 @@ impl<'a> MeshModels<'a> {
         alloc.models.host_mut()[0] = Model {
             lods: alloc.lods.device(),
             lod_count: alloc.lods.len() as u32,
-            flags: ModelFlags::EnableCulling,
+            flags: ModelFlags::EnableCulling | ModelFlags::EnableLODs,
             aabb: AABB::from_min_max(model_min_coord, model_max_coord),
             _padding: [0u32; 2],
         };
@@ -370,7 +369,7 @@ impl<'a> MeshModels<'a> {
     }
 
     pub fn prepare_render(&self, arena: &gpu::Arena<'a>, cmd_buf: &mut gpu::CommandBuffer<'a>,
-                          view_proj: &Mat4, camera_pos: Vec3A) -> anyhow::Result<()> {
+                          view_proj: &Mat4, camera_pos: Vec3A, viewport: f32) -> anyhow::Result<()> {
         // TODO: extreme frame time fluctuations
 
         cmd_buf.bind_compute_shader(&self.shader_reset_comp2);
@@ -385,7 +384,7 @@ impl<'a> MeshModels<'a> {
             part_count: self.alloc_gpu.part_count.device(),
             max_model_part_count: self.alloc_gpu.model_parts.len() as u32,
             _padding: [0u32; 1],
-            camera_pos,
+            camera_pos_and_viewport: camera_pos.extend(viewport),
         }])?;
 
         cmd_buf.bind_compute_shader(&self.shader_comp2);
