@@ -767,7 +767,7 @@ impl<'a> Application<'a> {
             Some(&self.accel_struct_descriptors),
         );
 
-        if !self.get_key(KeyCode::KeyM) {
+        if !self.get_key(KeyCode::KeyM) && !self.get_key(KeyCode::KeyN) {
             self.mesh_models.prepare_render(
                 arena, &mut command_buffer, &mat_vp, self.camera_pos.to_vec3a(),
                 ctx.get_window_size().1 as f32 / (fov * 0.5).tan())?;

@@ -49,3 +49,12 @@ struct ModelPart {
     // bit 0: fully inside AABB, skip per meshlet checks
     uint16_t flags;
 };
+
+// --- 24 bytes
+struct ModelInstanceFiltered {
+    MeshDataLODs lods;
+    MeshDataTransform transform;
+    // bit 0: skip per chunk frustum culling
+    uint flags;
+    uint lod;
+};

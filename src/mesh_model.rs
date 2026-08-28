@@ -116,12 +116,30 @@ struct Model {
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 struct CompData {
     frustum: Frustum,
-    model_instances: gpu::DevicePointer,  // [ModelInstance]
+    model_instances: gpu::DevicePointer,  // [ModelInstanceFiltered]
     model_parts: gpu::DevicePointer,  // [ModelPart]
-    part_count: gpu::DevicePointer,  // gpu::DrawMeshTasksIndirectCommand - only X count is written
+    part_count: gpu::DevicePointer,  // gpu::DrawMeshTasksIndirectCommandA - only X count is written
     max_model_part_count: u32,
     _padding: [u32; 1],
     camera_pos_and_viewport: Vec4,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct CompFilterData {
+    frustum: Frustum,
+    model_instances: gpu::DevicePointer,  // [ModelInstance]
+    model_instances_filtered: gpu::DevicePointer,  // [ModelInstanceFiltered]
+    filtered_instance_count: gpu::DevicePointer,  // gpu::DrawMeshTasksIndirectCommandA - only X count is written
+    instance_count: u32,
+    padding: [u32; 1],
+    camera_pos_and_viewport: Vec4,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct CompResetData {
+    counts: [gpu::DevicePointer; 2],  // gpu::DrawMeshTasksIndirectCommandA or compute equivalent
 }
 
 #[repr(C)]
@@ -148,6 +166,16 @@ struct ModelPart {
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct ModelInstanceFiltered {
+    lods: gpu::DevicePointer,  // [LOD]
+    transform: gpu::DevicePointer,  // Mat4
+    // used for communication between compute and task shader, meanings do not matter here
+    flags: u32,
+    lod: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
 struct ModelInstance {
     model: gpu::DevicePointer,  // Model
     transform: gpu::DevicePointer,  // Mat4
@@ -167,12 +195,15 @@ struct MultiAlloc {
 #[multi_allocation]
 struct MultiAllocGpu {
     model_parts: ModelPart,
-    part_count: gpu::DrawMeshTasksIndirectCommand,
+    model_instances_filtered: ModelInstanceFiltered,
+    part_count: gpu::DrawMeshTasksIndirectCommandA,
+    filtered_instance_count: gpu::DispatchIndirectCommandA,
 }
 
 pub struct MeshModels<'a> {
     shader_comp2: gpu::Shader<'a>,
     shader_reset_comp2: gpu::Shader<'a>,
+    shader_filter_comp2: gpu::Shader<'a>,
     shader_task2: gpu::Shader<'a>,
     shader_mesh2: gpu::Shader<'a>,
     shader_frag: gpu::Shader<'a>,
@@ -252,7 +283,9 @@ impl<'a> MeshModels<'a> {
         })?;
         let alloc_gpu = MultiAllocGpu::new_mem(gpu, MultiAllocGpuCounts {
             model_parts: repeat * repeat * level_model_parts[0],
+            model_instances_filtered: repeat * repeat,
             part_count: 1,
+            filtered_instance_count: 1,
         }, gpu::Memory::Gpu)?;
 
         let mut model_min_coord = Vec3::INFINITY;
@@ -359,6 +392,7 @@ impl<'a> MeshModels<'a> {
         Ok(Self {
             shader_comp2: load_shader("shaders/comp_model2.glsl", gpu::ShaderStage::Compute, gpu)?,
             shader_reset_comp2: load_shader("shaders/comp_model2_reset.glsl", gpu::ShaderStage::Compute, gpu)?,
+            shader_filter_comp2: load_shader("shaders/comp_model2_filter.glsl", gpu::ShaderStage::Compute, gpu)?,
             shader_task2: load_shader("shaders/task_model2.glsl", gpu::ShaderStage::Task, gpu)?,
             shader_mesh2: load_shader("shaders/mesh_model2.glsl", gpu::ShaderStage::MeshWithTask, gpu)?,
             shader_frag: load_shader("shaders/frag.glsl", gpu::ShaderStage::Pixel, gpu)?,
@@ -372,14 +406,50 @@ impl<'a> MeshModels<'a> {
                           view_proj: &Mat4, camera_pos: Vec3A, viewport: f32) -> anyhow::Result<()> {
         // TODO: extreme frame time fluctuations
 
-        cmd_buf.bind_compute_shader(&self.shader_reset_comp2);
-        cmd_buf.dispatch(self.alloc_gpu.part_count.device(), (1, 1, 1));
+        let frustum = get_frustum(view_proj);
 
-        cmd_buf.barrier(gpu::Stage::Compute, gpu::Stage::Compute, gpu::HazardFlags::ShaderMemory);
+        let comp_reset_data = arena.alloc_data(&[CompResetData {
+            counts: [
+                self.alloc_gpu.part_count.device(),
+                self.alloc_gpu.filtered_instance_count.device(),
+            ]
+        }])?;
+
+        cmd_buf.bind_compute_shader(&self.shader_reset_comp2);
+        cmd_buf.dispatch(comp_reset_data.device(), (1, 1, 1));
+
+        cmd_buf.barrier(
+            gpu::Stage::Compute,
+            gpu::Stage::Compute,
+            gpu::HazardFlags::ShaderMemory);
+
+        let comp_filter_data = arena.alloc_data(&[CompFilterData {
+            frustum,
+            model_instances: self.alloc.model_instances.device(),
+            model_instances_filtered: self.alloc_gpu.model_instances_filtered.device(),
+            filtered_instance_count: self.alloc_gpu.filtered_instance_count.device(),
+            instance_count: self.alloc.model_instances.len() as u32,
+            padding: [0u32; 1],
+            camera_pos_and_viewport: camera_pos.extend(viewport),
+        }])?;
+
+        cmd_buf.bind_compute_shader(&self.shader_filter_comp2);
+        cmd_buf.dispatch(
+            comp_filter_data.device(),
+            (self.alloc.model_instances.len().div_ceil(64) as u32, 1, 1));
+
+        cmd_buf.barrier(
+            gpu::Stage::Compute,
+            gpu::Stage::Compute,
+            gpu::HazardFlags::ShaderMemory);
+        cmd_buf.barrier(
+            gpu::Stage::Compute,
+            gpu::Stage::DrawIndirect,
+            gpu::HazardFlags::IndirectDrawArguments);
 
         let comp_data = arena.alloc_data(&[CompData {
-            frustum: get_frustum(view_proj),
-            model_instances: self.alloc.model_instances.device(),
+            frustum,
+            model_instances: self.alloc_gpu.model_instances_filtered.device(),
             model_parts: self.alloc_gpu.model_parts.device(),
             part_count: self.alloc_gpu.part_count.device(),
             max_model_part_count: self.alloc_gpu.model_parts.len() as u32,
@@ -388,8 +458,9 @@ impl<'a> MeshModels<'a> {
         }])?;
 
         cmd_buf.bind_compute_shader(&self.shader_comp2);
-        cmd_buf.dispatch(
-            comp_data.device(), (self.alloc.model_instances.len() as u32, 1, 1));
+        cmd_buf.dispatch_indirect(
+            comp_data.device(),
+            self.alloc_gpu.filtered_instance_count.device());
 
         cmd_buf.barrier(
             gpu::Stage::Compute,
@@ -416,7 +487,9 @@ impl<'a> MeshModels<'a> {
 
         cmd_buf.bind_shaders([&self.shader_task2, &self.shader_mesh2, &self.shader_frag]);
         cmd_buf.draw_meshlets_indirect(
-            mesh_data.device(), pixel_data, self.alloc_gpu.part_count.device(), 1, 12);
+            mesh_data.device(), pixel_data,
+            self.alloc_gpu.part_count.device(),
+            1, 16);
 
         Ok(())
     }

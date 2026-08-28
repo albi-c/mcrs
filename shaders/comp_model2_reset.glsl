@@ -2,20 +2,28 @@
 
 #include "common.glsl"
 
-layout(local_size_x = 1) in;
+const uint COUNTS = 2;
 
-layout(std430, buffer_reference, buffer_reference_align = 8) restrict buffer CompDataPartCount {
+layout(local_size_x = COUNTS) in;
+
+struct PartCount {
     uint x;
     uint y;
     uint z;
 };
 
+layout(std430, buffer_reference, buffer_reference_align = 8) restrict buffer CompDataPartCountPointer {
+    PartCount count;
+};
+
+layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer CompData {
+    CompDataPartCountPointer counts[COUNTS];
+};
+
 layout(std430, push_constant) uniform Data {
-    CompDataPartCount partCount;
+    CompData comp;
 } data;
 
 void main() {
-    data.partCount.x = 0;
-    data.partCount.y = 1;
-    data.partCount.z = 1;
+    data.comp.counts[gl_LocalInvocationIndex].count = PartCount(0, 1, 1);
 }

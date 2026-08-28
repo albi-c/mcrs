@@ -12,7 +12,7 @@ layout(location = 2) flat out uvec4 outMaterials[];
 layout(location = 3) out vec3 outWorldPositions[];
 layout(location = 4) flat out uint outDebugColors[];
 
-taskPayloadSharedEXT Task IN;
+TASK_VAR IN;
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshDataMaterials {
     // Material described in vert.glsl

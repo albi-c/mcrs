@@ -6,7 +6,7 @@
 
 layout(local_size_x = MODEL_PART_SIZE, local_size_y = 1, local_size_z = 1) in;
 
-taskPayloadSharedEXT Task OUT;
+TASK_VAR OUT;
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer MeshDataModelParts {
     ModelPart data[];

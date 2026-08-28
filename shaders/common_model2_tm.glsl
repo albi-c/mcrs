@@ -9,3 +9,5 @@ struct Task {
     uint8_t meshletOffsets[MODEL_PART_SIZE];
     uint meshletBase;
 };
+
+#define TASK_VAR taskPayloadSharedEXT Task

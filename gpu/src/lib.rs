@@ -524,10 +524,48 @@ pub struct DrawIndexedIndirectCommand {
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct DrawIndexedIndirectCommandA {
+    pub index_count: u32,
+    pub instance_count: u32,
+    pub first_index: u32,
+    pub vertex_offset: u32,
+    pub first_instance: u32,
+    pub _padding: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct DrawMeshTasksIndirectCommand {
     pub group_count_x: u32,
     pub group_count_y: u32,
     pub group_count_z: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct DrawMeshTasksIndirectCommandA {
+    pub group_count_x: u32,
+    pub group_count_y: u32,
+    pub group_count_z: u32,
+    pub _alignment: u32,
+}
+
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct DispatchIndirectCommand {
+    pub group_count_x: u32,
+    pub group_count_y: u32,
+    pub group_count_z: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct DispatchIndirectCommandA {
+    pub group_count_x: u32,
+    pub group_count_y: u32,
+    pub group_count_z: u32,
+    pub _alignment: u32,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]
