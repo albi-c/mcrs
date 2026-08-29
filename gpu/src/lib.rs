@@ -168,6 +168,7 @@ pub enum Format {
     RG8UNorm = vk::Format::R8G8_UNORM.as_raw(),
     RGBA8UNorm = vk::Format::R8G8B8A8_UNORM.as_raw(),
     RGBA16Float = vk::Format::R16G16B16A16_SFLOAT.as_raw(),
+    A8UNorm = vk::Format::A8_UNORM.as_raw(),
     Depth32Float = vk::Format::D32_SFLOAT.as_raw(),
 }
 
@@ -414,7 +415,7 @@ pub struct BlendDesc {
     pub color_write_mask: ColorComponents,
 }
 
-#[derive(Debug, SmartDefault)]
+#[derive(Debug, Clone, SmartDefault)]
 pub struct Target<'a> {
     pub view: TextureView<'a>,
     #[default(Load::Load)]
@@ -728,7 +729,7 @@ impl<'a> IndexMut<usize> for DescriptorHeap<'a> {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct TextureView<'a> {
     view: vk::ImageView,
     pd: PhantomData<&'a Texture<'a>>,
@@ -769,6 +770,7 @@ impl<'a> Texture<'a> {
             Format::RG8UNorm => vk::ImageAspectFlags::COLOR,
             Format::RGBA8UNorm => vk::ImageAspectFlags::COLOR,
             Format::RGBA16Float => vk::ImageAspectFlags::COLOR,
+            Format::A8UNorm => vk::ImageAspectFlags::COLOR,
             Format::Depth32Float => vk::ImageAspectFlags::DEPTH,
         }
     }
@@ -1028,7 +1030,7 @@ impl<'a> CommandBuffer<'a> {
     pub fn copy(&mut self, dst: DevicePointer, src: DevicePointer) {
         todo!()
     }
-    pub fn copy_to_texture(&mut self, src: DevicePointer, tex: &Texture<'_>) {
+    pub fn copy_to_texture_rl(&mut self, src: DevicePointer, tex: &Texture<'_>, row_length: u32) {
         let (buffer, offset) = self.gpu.device_addr_to_buffer_offset(src)
             .expect("invalid device pointer");
         let img_subresource = vk::ImageSubresourceLayers::builder()
@@ -1038,13 +1040,16 @@ impl<'a> CommandBuffer<'a> {
             .layer_count(1);
         let img_copy = vk::BufferImageCopy::builder()
             .buffer_offset(offset)
-            .buffer_row_length(tex.dimensions.0)
+            .buffer_row_length(row_length)
             .buffer_image_height(tex.dimensions.1)
             .image_offset(vk::Offset3D::default())
             .image_extent(vk::Extent3D { width: tex.dimensions.0, height: tex.dimensions.1, depth: tex.dimensions.2 })
             .image_subresource(img_subresource);
         unsafe { self.gpu.device.cmd_copy_buffer_to_image(
             self.buffer, buffer, tex.image, vk::ImageLayout::GENERAL, &[img_copy]) };
+    }
+    pub fn copy_to_texture(&mut self, src: DevicePointer, tex: &Texture<'_>) {
+        self.copy_to_texture_rl(src, tex, tex.dimensions.0);
     }
     fn image_mipmap_barrier(&mut self, tex: &Texture<'_>, mip_level: u32,
                             dst_access: vk::AccessFlags, dst_stage: vk::PipelineStageFlags) {
@@ -1362,7 +1367,7 @@ impl<'a> CommandBuffer<'a> {
                 for i in 0..(desc.color_targets.len() as u32) {
                     dev.cmd_set_color_blend_enable_ext(self.buffer, i, &[vk::TRUE]);
                 }
-                todo!("color blending not implemented")
+                unimplemented!("color blending")
             } else {
                 for i in 0..(desc.color_targets.len() as u32) {
                     dev.cmd_set_color_blend_enable_ext(self.buffer, i, &[vk::FALSE]);

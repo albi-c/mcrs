@@ -15,6 +15,7 @@ use winit::event::ElementState;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use gpu::{MemoryAllocation, MemoryAllocator};
 use crate::gltf;
+use crate::imgui::Imgui;
 use crate::mesh_model::MeshModels;
 
 const FRAMES_IN_FLIGHT: u64 = 2;
@@ -308,6 +309,7 @@ pub struct Application<'a> {
     frame_arenas: Box<[gpu::Arena<'a>]>,
     next_frame: u64,
     last_time: Option<f64>,
+    imgui: Imgui<'a>,
 
     textures: WindowSizedTextures<'a>,
     tex_descriptors: gpu::DescriptorHeap<'a>,
@@ -395,6 +397,13 @@ impl<'a> Application<'a> {
         gpu.sampler_descriptor(gpu::SamplerDesc {
             ..Default::default()
         }, &mut sampler_descriptors[0])?;
+        gpu.sampler_descriptor(gpu::SamplerDesc {
+            min_filter: gpu::Filter::Nearest,
+            mag_filter: gpu::Filter::Nearest,
+            mip_mode: gpu::MipmapMode::Nearest,
+            anisotropy: false,
+            ..Default::default()
+        }, &mut sampler_descriptors[1])?;
 
         queue.submit_no_signal(command_buffer)?.wait();
 
@@ -407,12 +416,16 @@ impl<'a> Application<'a> {
         let tl_as = create_top_level_as(gpu, &queue, &bl_as)?;
         tl_as.descriptor(&mut accel_struct_descriptors[0]);
 
+        // TODO: detect proper imgui scaling
+        // TODO: extract some glsl functions like uint to vec4 unpacking to common.glsl
+        // TODO: backend rewrite - !! typed device pointers and custom push constant formats
+        // TODO: hi-z occlusion culling
+        // TODO: multiview for imgui - all swapchains should be submitted using one call, and multi_viewport imgui feature flag
         // TODO: shader specialization (vk::ShaderCreateInfoEXT.specialization_info property) - set workgroup size to subgroup size
         // TODO: vsync toggle (switch present_mode to fifo)
-        // TODO: move from vulkanalia to ash to make use of imgui ash backend
         // TODO: render graph, automatic creation of screen sized textures
         // TODO: deferred deallocation (will run after FRAMES_IN_FLIGHT + 1 frames)
-        // TODO: deferred rendering (output material id to texture and do texture sampling in post)
+        // TODO: deferred rendering
         // TODO: HDR, bloom and other post effects
         // TODO: OIT
         // TODO: shader hot reload
@@ -422,7 +435,6 @@ impl<'a> Application<'a> {
         // TODO: ray query for shadows
         // TODO: point shadows using multi view
         // TODO: model loading abstraction
-        // TODO: imgui
         // TODO: game gui framework
         // TODO: physics
         // TODO: config system - maybe use compile time perfect (almost) string hash
@@ -556,6 +568,7 @@ impl<'a> Application<'a> {
                 .collect::<Result<_>>()?,
             next_frame: 1,
             last_time: None,
+            imgui: Imgui::new(gpu, 512)?,
 
             textures,
             tex_descriptors,
@@ -611,8 +624,8 @@ impl<'a> Application<'a> {
         })
     }
 
-    fn get_frame_arena(&self) -> &gpu::Arena<'_> {
-        &self.frame_arenas[(self.next_frame % FRAMES_IN_FLIGHT) as usize]
+    fn get_frame_area_index(&self) -> usize {
+        (self.next_frame % FRAMES_IN_FLIGHT) as usize
     }
 
     fn get_key(&self, code: KeyCode) -> bool {
@@ -662,7 +675,7 @@ impl<'a> Application<'a> {
         )
     }
 
-    fn update_particles(&self, cmd_buf: &mut gpu::CommandBuffer<'a>, arena: &gpu::Arena<'_>, dt: f32) -> Result<()> {
+    fn update_particles(&self, cmd_buf: &mut gpu::CommandBuffer<'_>, arena: &gpu::Arena<'_>, dt: f32) -> Result<()> {
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
         struct ComputeData {
@@ -697,7 +710,7 @@ impl<'a> Application<'a> {
         self.textures.post_color.view_descriptor(&mut self.tex_descriptors[0])?;
         self.particle_texture.view_descriptor(&mut self.tex_descriptors[1])?;
 
-        let arena = self.get_frame_arena();
+        let arena = &self.frame_arenas[self.get_frame_area_index()];
         arena.reset();
 
         let fov = 100.0f32.to_radians();
@@ -866,7 +879,7 @@ impl<'a> Application<'a> {
         )])?;
         let post_pass_desc = gpu::RenderPassDesc {
             cull: gpu::Cull::None,
-            color_targets: &[swapchain_target],
+            color_targets: &[swapchain_target.clone()],
             ..Default::default()
         };
         command_buffer.begin_render_pass(&post_pass_desc);
@@ -877,6 +890,14 @@ impl<'a> Application<'a> {
             (1, 1, 1));
 
         command_buffer.end_render_pass();
+
+        swapchain_target.load_op = gpu::Load::Load;
+        self.imgui.start_frame(ctx.get_window_size(), dt);
+        self.imgui.frame(|ui| {
+            ui.label_text("test", "Lorem ipsum dolor sit amet");
+        });
+        self.imgui.render(&mut command_buffer, arena, ctx.get_window_size(),
+                          swapchain_target, &mut self.tex_descriptors)?;
 
         self.queue.submit(command_buffer, &self.frame_semaphore, self.next_frame)?;
         self.gpu.swapchain_present(&self.frame_semaphore, self.next_frame)?;

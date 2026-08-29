@@ -5,3 +5,4 @@
 /models/*.cache
 /image_cache/*
 /shader_cache/*
+/imgui.ini

@@ -1,11 +1,13 @@
 #![feature(file_buffered)]
 #![feature(map_try_insert)]
 #![feature(exact_div)]
+#![feature(vec_from_fn)]
 
 mod application;
 mod gltf;
 mod obj;
 mod mesh_model;
+mod imgui;
 
 use std::cell::Cell;
 use std::collections::HashSet;
