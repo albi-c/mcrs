@@ -175,6 +175,7 @@ impl Queues {
 pub struct PipelineLayout {
     pub layout: vk::PipelineLayout,
     pub set_layouts: [vk::DescriptorSetLayout; 4],
+    pub push_constant_ranges: [vk::PushConstantRange; 1],
 }
 
 impl PipelineLayout {
@@ -209,7 +210,8 @@ impl PipelineLayout {
         let push_constant_ranges = [
             vk::PushConstantRange::builder()
                 .stage_flags(Self::ALL_STAGES)
-                .size(16),
+                .size(16)
+                .build(),
         ];
         let set_layouts = [
             Self::create_descriptor_set_layout(device, vk::DescriptorType::SAMPLED_IMAGE, Self::MAX_TEXTURES)?,
@@ -224,6 +226,7 @@ impl PipelineLayout {
         Ok(Self {
             layout,
             set_layouts,
+            push_constant_ranges,
         })
     }
 
@@ -701,37 +704,76 @@ fn get_shader_flags(stage: ShaderStage) -> vk::ShaderCreateFlagsEXT {
     }
 }
 
-pub fn create_shader<'a>(gpu: &'a Gpu, spirv: &[u8], stage: ShaderStage) -> Result<Shader<'a>> {
+fn get_shader_create_info(gpu: &Gpu, spirv: &[u8], stage: ShaderStage,
+                          link: bool) -> Result<(vk::ShaderCreateInfoEXT, Box<[u8]>)> {
     let length = (spirv.len() + 3) & !3;
     let layout = Layout::array::<u8>(length)?.align_to(4)?;
     let mem = unsafe { std::alloc::alloc(layout) };
-    let buffer = unsafe { std::slice::from_raw_parts_mut(mem, length) };
+    let mut buffer = unsafe { Vec::from_raw_parts(mem, length, length) }.into_boxed_slice();
     buffer[..spirv.len()].copy_from_slice(spirv);
 
-    let vk_stage = get_stage(stage);
-    let push_constant_ranges = [
-        vk::PushConstantRange::builder()
-            .stage_flags(PipelineLayout::ALL_STAGES)
-            .size(16),
-    ];
+    let mut flags = get_shader_flags(stage);
+    if link {
+        flags |= vk::ShaderCreateFlagsEXT::LINK_STAGE;
+    }
+
+    // IMPORTANT: info can only contain references to code buffer because it is returned and dropped later,
+    // or gpu structs as they live long enough
     let info = vk::ShaderCreateInfoEXT::builder()
-        .stage(vk_stage)
+        .stage(get_stage(stage))
         .next_stage(get_next_stage(stage))
-        .code(buffer)
+        .code(&buffer)
         .code_type(vk::ShaderCodeTypeEXT::SPIRV)
-        .push_constant_ranges(&push_constant_ranges)
+        .push_constant_ranges(&gpu.pipeline_layout.push_constant_ranges)
         .name(b"main\0")
         .set_layouts(&gpu.pipeline_layout.set_layouts)
-        .flags(get_shader_flags(stage));
+        .flags(flags)
+        .build();
+
+    Ok((info, buffer))
+}
+
+pub fn create_shader<'a>(gpu: &'a Gpu, spirv: &[u8], stage: ShaderStage) -> Result<Shader<'a>> {
+    let (info, buffer) = get_shader_create_info(gpu, spirv, stage, false)?;
 
     let infos = [info];
     let shader = unsafe { gpu.device.create_shaders_ext(&infos, None)?.0[0] };
 
-    unsafe { std::alloc::dealloc(mem, layout) };
+    drop(buffer);
 
     Ok(Shader {
         shader,
-        stage: vk_stage,
+        stage: get_stage(stage),
         gpu,
     })
+}
+
+pub fn create_shaders_linked<'a, 'b, const N: usize>(
+    gpu: &'a Gpu,
+    shaders: impl IntoIterator<Item = (&'b [u8], ShaderStage)>,
+) -> Result<SmallVec<[Shader<'a>; N]>> {
+    let mut infos = SmallVec::<[_; N]>::new();
+    let mut buffers = SmallVec::<[_; N]>::new();
+    let mut stages = SmallVec::<[_; N]>::new();
+
+    for (spirv, stage) in shaders.into_iter() {
+        let (info, buffer) = get_shader_create_info(gpu, spirv, stage, true)?;
+        infos.push(info);
+        buffers.push(buffer);
+        stages.push(stage);
+    }
+
+    let (shaders, _success) = unsafe { gpu.device.create_shaders_ext(&infos, None)? };
+    let shaders = shaders.into_iter()
+        .zip(stages)
+        .map(|(shader, stage)| Shader {
+            shader,
+            stage: get_stage(stage),
+            gpu,
+        })
+        .collect::<SmallVec<_>>();
+
+    drop(buffers);
+
+    Ok(shaders)
 }

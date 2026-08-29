@@ -3,9 +3,11 @@ use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2, Vec3, Vec3A, Vec4};
 use half::f16;
+use itertools::Itertools;
+use smallvec::SmallVec;
 use gpu::{MemoryAllocation, MemoryAllocator};
 use macros::multi_allocation;
-use crate::application::load_shader;
+use crate::application::{load_shader, load_shader_spirv};
 use crate::gltf::Scene;
 
 #[repr(C)]
@@ -389,13 +391,25 @@ impl<'a> MeshModels<'a> {
 
         println!("Clusterized scene in {:.03} seconds", start_time.elapsed().as_secs_f32());
 
+        const SHADER_FILES: &'static [(&'static str, gpu::ShaderStage)] = &[
+            ("shaders/task_model2.glsl", gpu::ShaderStage::Task),
+            ("shaders/mesh_model2.glsl", gpu::ShaderStage::MeshWithTask),
+            ("shaders/frag.glsl", gpu::ShaderStage::Pixel),
+        ];
+        let mut spirv = SmallVec::<[_; 3]>::new();
+        for &(f, s) in SHADER_FILES {
+            spirv.push((load_shader_spirv(f, s)?, s));
+        }
+        let [shader_task2, shader_mesh2, shader_frag] = gpu.create_shaders_linked_arr(
+            spirv.iter().map(|(c, s)| (c.as_slice(), *s)))?;
+
         Ok(Self {
             shader_comp2: load_shader("shaders/comp_model2.glsl", gpu::ShaderStage::Compute, gpu)?,
             shader_reset_comp2: load_shader("shaders/comp_model2_reset.glsl", gpu::ShaderStage::Compute, gpu)?,
             shader_filter_comp2: load_shader("shaders/comp_model2_filter.glsl", gpu::ShaderStage::Compute, gpu)?,
-            shader_task2: load_shader("shaders/task_model2.glsl", gpu::ShaderStage::Task, gpu)?,
-            shader_mesh2: load_shader("shaders/mesh_model2.glsl", gpu::ShaderStage::MeshWithTask, gpu)?,
-            shader_frag: load_shader("shaders/frag.glsl", gpu::ShaderStage::Pixel, gpu)?,
+            shader_task2,
+            shader_mesh2,
+            shader_frag,
 
             alloc,
             alloc_gpu,

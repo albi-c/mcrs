@@ -240,7 +240,7 @@ fn compile_shader(glsl: &str, path: &str, stage: gpu::ShaderStage) -> Result<sha
     Ok(compiler.compile_into_spirv(glsl, shader_stage, path, "main", Some(&options))?)
 }
 
-pub fn load_shader(path: impl AsRef<Path>, stage: gpu::ShaderStage, gpu: &gpu::Gpu) -> Result<gpu::Shader<'_>> {
+pub fn load_shader_spirv(path: impl AsRef<Path>, stage: gpu::ShaderStage) -> Result<Vec<u8>> {
     // TODO: !! make shaders recompile when changing included files
     let enable_caching = false;
 
@@ -261,7 +261,7 @@ pub fn load_shader(path: impl AsRef<Path>, stage: gpu::ShaderStage, gpu: &gpu::G
             let mut spirv = vec![];
             file.read_to_end(&mut spirv)?;
             assert_eq!(spirv.len() % 4, 0, "spir-v length not a multiple of 4");
-            return gpu.create_shader(&spirv, stage);
+            return Ok(spirv);
         }
     }
     let result = compile_shader(&glsl, &path.as_ref().to_string_lossy(), stage)?;
@@ -270,7 +270,11 @@ pub fn load_shader(path: impl AsRef<Path>, stage: gpu::ShaderStage, gpu: &gpu::G
         file.write_all(bytemuck::cast_slice(&[hash(&glsl)]))?;
         file.write_all(result.as_binary_u8())?;
     }
-    gpu.create_shader(result.as_binary_u8(), stage)
+    Ok(result.as_binary_u8().to_owned())
+}
+
+pub fn load_shader(path: impl AsRef<Path>, stage: gpu::ShaderStage, gpu: &gpu::Gpu) -> Result<gpu::Shader<'_>> {
+    gpu.create_shader(&load_shader_spirv(path, stage)?, stage)
 }
 
 struct WindowSizedTextures<'a> {
@@ -403,6 +407,7 @@ impl<'a> Application<'a> {
         let tl_as = create_top_level_as(gpu, &queue, &bl_as)?;
         tl_as.descriptor(&mut accel_struct_descriptors[0]);
 
+        // TODO: shader specialization (vk::ShaderCreateInfoEXT.specialization_info property) - set workgroup size to subgroup size
         // TODO: vsync toggle (switch present_mode to fifo)
         // TODO: move from vulkanalia to ash to make use of imgui ash backend
         // TODO: render graph, automatic creation of screen sized textures
@@ -426,6 +431,7 @@ impl<'a> Application<'a> {
         // TODO: multithreading (probably handled by bevy_ecs if that is used)
         // TODO: gpu timestamps for profiling, integration with imgui timeline
         // TODO: async file io, reading into gpu buffers from other threads
+        // TODO: procedural texture compute shader generation (using bytecode stack machine?), imgui nodes
 
         const INTENSITY: f32 = 1.5;
         const COLOR: Vec3A = Vec3A::new(0.85, 0.65, 0.05);

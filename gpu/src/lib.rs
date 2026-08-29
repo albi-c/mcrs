@@ -6,6 +6,7 @@
 #![feature(const_index)]
 #![expect(incomplete_features)]
 #![feature(inherent_associated_types)]
+#![feature(iter_array_chunks)]
 
 mod vulkan;
 mod arena;
@@ -19,8 +20,8 @@ use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::{Bound, Index, IndexMut};
-use anyhow::Result;
-use bitflags::{bitflags, Flags};
+use anyhow::{anyhow, Result};
+use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use smallvec::{smallvec, SmallVec};
 use smart_default::SmartDefault;
@@ -28,7 +29,7 @@ use vulkanalia::{vk, Device, Instance, Version};
 use vulkanalia::vk::{DeviceV1_0, DeviceV1_2, DeviceV1_3, ExtDescriptorBufferExtensionDeviceCommands, ExtDeviceFaultExtensionDeviceCommands, ExtMeshShaderExtensionDeviceCommands, ExtShaderObjectExtensionDeviceCommands, Handle, HasBuilder, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
 use vulkanalia_vma as vma;
 use vulkanalia_vma::Alloc;
-use crate::vulkan::{create_logical_device, create_semaphore, create_shader, create_swapchain, find_suitable_device, get_cull_mode, get_front_face, get_sample_count_flag, AccelerationStructureInfo, CommandBufferPool, DescriptorSizes, PipelineLayout, PooledCommandBuffer, QueueFamilies, Queues, Swapchain};
+use crate::vulkan::{create_logical_device, create_semaphore, create_shader, create_swapchain, find_suitable_device, get_cull_mode, get_front_face, get_sample_count_flag, AccelerationStructureInfo, CommandBufferPool, DescriptorSizes, PipelineLayout, PooledCommandBuffer, QueueFamilies, Queues, Swapchain, create_shaders_linked};
 
 pub use vulkan::create_debug_info_callback;
 pub use crate::arena::{Arena, ArenaAllocation};
@@ -166,6 +167,7 @@ pub enum Format {
     R8UNorm = vk::Format::R8_UNORM.as_raw(),
     RG8UNorm = vk::Format::R8G8_UNORM.as_raw(),
     RGBA8UNorm = vk::Format::R8G8B8A8_UNORM.as_raw(),
+    RGBA16Float = vk::Format::R16G16B16A16_SFLOAT.as_raw(),
     Depth32Float = vk::Format::D32_SFLOAT.as_raw(),
 }
 
@@ -766,6 +768,7 @@ impl<'a> Texture<'a> {
             Format::R8UNorm => vk::ImageAspectFlags::COLOR,
             Format::RG8UNorm => vk::ImageAspectFlags::COLOR,
             Format::RGBA8UNorm => vk::ImageAspectFlags::COLOR,
+            Format::RGBA16Float => vk::ImageAspectFlags::COLOR,
             Format::Depth32Float => vk::ImageAspectFlags::DEPTH,
         }
     }
@@ -1918,14 +1921,13 @@ impl Gpu {
     pub fn create_shader(&self, spirv: &[u8], stage: ShaderStage) -> Result<Shader<'_>> {
         create_shader(self, spirv, stage)
     }
-
-    // pub fn create_compute_pipeline(&self, spirv: &[u8]) -> Pipeline<'_> {
-    //     todo!()
-    // }
-    // pub fn create_graphics_meshlet_pipeline(&self, meshlet_spirv: &[u8], pixel_spirv: &[u8],
-    //                                         raster_desc: RasterDesc) -> Pipeline<'_> {
-    //     todo!()
-    // }
+    pub fn create_shaders_linked<'a>(&self, shaders: impl IntoIterator<Item = (&'a [u8], ShaderStage)>) -> Result<SmallVec<[Shader<'_>; 3]>> {
+        create_shaders_linked::<3>(self, shaders)
+    }
+    pub fn create_shaders_linked_arr<'a, const N: usize>(&self, shaders: impl IntoIterator<Item = (&'a [u8], ShaderStage)>) -> Result<[Shader<'_>; N]> {
+        create_shaders_linked::<N>(self, shaders)?.into_inner()
+            .map_err(|_| anyhow!("invalid input count for create_shaders_linked_arr::<{N}>"))
+    }
 
     pub fn create_queue(&self, ty: QueueType) -> Result<Queue<'_>> {
         Ok(match ty {
