@@ -11,9 +11,11 @@ use bytemuck::{Pod, Zeroable};
 use glam::{IVec3, Mat4, Vec2, Vec3, Vec3A, Vec4, Vec4Swizzles};
 use half::f16;
 use image::{EncodableLayout, ImageReader};
-use winit::event::ElementState;
+use smol_str::SmolStr;
+use winit::event::{ElementState, MouseButton};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use gpu::{MemoryAllocation, MemoryAllocator};
+use macros::winit_to_imgui_key_fn;
 use crate::gltf;
 use crate::imgui::Imgui;
 use crate::mesh_model::MeshModels;
@@ -331,6 +333,8 @@ pub struct Application<'a> {
     camera_pos: Vec3,
     camera_front: Vec3,
     camera_look: Vec2,
+
+    text_field: String,
 }
 
 fn create_bottom_level_as<'a>(gpu: &'a gpu::Gpu, queue: &gpu::Queue<'a>, scene: &gltf::Scene<'a>,
@@ -379,6 +383,24 @@ fn create_top_level_as<'a>(gpu: &'a gpu::Gpu, queue: &gpu::Queue<'a>,
     Ok(tl_as)
 }
 
+winit_to_imgui_key_fn! { winit_to_imgui_key;
+    LeftArrow = ArrowLeft, RightArrow = ArrowRight, UpArrow = ArrowUp, DownArrow = ArrowDown,
+    PageUp, PageDown, Home, End, Insert, Delete,
+    Tab, Backspace, Space, Enter, Escape,
+    LeftCtrl = ControlLeft, LeftShift = ShiftLeft, LeftAlt = AltLeft, LeftSuper = SuperLeft,
+    RightCtrl = ControlRight, RightShift = ShiftRight, RightAlt = AltRight, RightSuper = SuperRight,
+    Menu = ContextMenu,
+    Apostrophe = Quote,
+    Comma, Minus, Period, Slash, Semicolon, Equal,
+    LeftBracket = BracketLeft, Backslash, RightBracket = BracketRight, GraveAccent = Backquote,
+    CapsLock, ScrollLock, NumLock, PrintScreen,Pause,
+    KeypadDecimal = NumpadDecimal,
+    KeypadDivide = NumpadDivide, KeypadMultiply = NumpadMultiply,
+    KeypadSubtract = NumpadSubtract, KeypadAdd = NumpadAdd,
+    KeypadEnter = NumpadEnter, KeypadEqual = NumpadEqual,
+    AppBack = BrowserBack, AppForward = BrowserForward,
+}
+
 impl<'a> Application<'a> {
     pub fn new(gpu: &'a gpu::Gpu, ctx: &dyn gpu::SwapchainContext) -> Result<Self> {
         let queue = gpu.create_queue(gpu::QueueType::Graphics)?;
@@ -416,7 +438,7 @@ impl<'a> Application<'a> {
         let tl_as = create_top_level_as(gpu, &queue, &bl_as)?;
         tl_as.descriptor(&mut accel_struct_descriptors[0]);
 
-        // TODO: detect proper imgui scaling
+        // TODO: detect proper imgui scaling, proper imgui texture retirement
         // TODO: extract some glsl functions like uint to vec4 unpacking to common.glsl
         // TODO: backend rewrite - !! typed device pointers and custom push constant formats
         // TODO: hi-z occlusion culling
@@ -594,6 +616,8 @@ impl<'a> Application<'a> {
             camera_pos: Vec3::new(0.0, 0.0, 0.0),
             camera_front: Vec3::new(0.0, 0.0, 1.0),
             camera_look: Vec2::new(0.0, 0.0),
+
+            text_field: "".to_string(),
         })
     }
 
@@ -660,11 +684,7 @@ impl<'a> Application<'a> {
             vel -= up;
         }
 
-        self.camera_pos += dt * vel * if self.get_key(KeyCode::ControlLeft) {
-            10.0
-        } else {
-            2.5
-        };
+        self.camera_pos += dt * vel * 10.0;
     }
 
     fn get_view_matrix(&self) -> Mat4 {
@@ -894,7 +914,8 @@ impl<'a> Application<'a> {
         swapchain_target.load_op = gpu::Load::Load;
         self.imgui.start_frame(ctx.get_window_size(), dt);
         self.imgui.frame(|ui| {
-            ui.label_text("test", "Lorem ipsum dolor sit amet");
+            ui.label_text("fps", (1.0 / dt).to_string());
+            ui.input_text("text", &mut self.text_field).build();
         });
         self.imgui.render(&mut command_buffer, arena, ctx.get_window_size(),
                           swapchain_target, &mut self.tex_descriptors)?;
@@ -919,22 +940,61 @@ impl<'a> Application<'a> {
         Ok(())
     }
 
-    pub fn key(&mut self, key: PhysicalKey, state: ElementState) {
+    pub fn key(&mut self, key: PhysicalKey, state: ElementState, text: Option<SmolStr>) -> Option<bool> {
+        if state == ElementState::Pressed && let Some(text) = text {
+            self.imgui.io(|io| {
+                io.add_input_characters_utf8(&text);
+            });
+        }
+
         self.keys.insert(key, state == ElementState::Pressed);
-        if key == PhysicalKey::Code(KeyCode::KeyP) && state == ElementState::Pressed {
-            println!("{:?}", self.camera_pos);
+
+        if let PhysicalKey::Code(code) = key {
+            if let Some(key) = winit_to_imgui_key(code) {
+                self.imgui.io(|io| {
+                    io.add_key_event(key, state == ElementState::Pressed);
+                });
+            }
+        }
+
+        if key == PhysicalKey::Code(KeyCode::ControlLeft) {
+            Some(state == ElementState::Pressed)
+        } else {
+            None
         }
     }
 
+    pub fn mouse_click(&mut self, button: MouseButton, state: ElementState) {
+        self.imgui.io(|io| {
+            let button = match button {
+                MouseButton::Left => dear_imgui_rs::MouseButton::Left,
+                MouseButton::Right => dear_imgui_rs::MouseButton::Right,
+                MouseButton::Middle => dear_imgui_rs::MouseButton::Middle,
+                MouseButton::Back => dear_imgui_rs::MouseButton::Extra1,
+                MouseButton::Forward => dear_imgui_rs::MouseButton::Extra2,
+                MouseButton::Other(_) => return,
+            };
+            io.add_mouse_button_event(button, state == ElementState::Pressed);
+        });
+    }
+
     pub fn mouse_move(&mut self, delta: (f64, f64)) {
-        const SENSITIVITY: f32 = 0.5;
-        let motion = Vec2::new(delta.0 as f32, delta.1 as f32) * SENSITIVITY;
-        self.camera_look.x = (self.camera_look.x + motion.x).rem_euclid(360.0);
-        self.camera_look.y = (self.camera_look.y - motion.y).clamp(-89.99, 89.99);
+        if self.get_key(KeyCode::ControlLeft) {
+            const SENSITIVITY: f32 = 0.5;
+            let motion = Vec2::new(delta.0 as f32, delta.1 as f32) * SENSITIVITY;
+            self.camera_look.x = (self.camera_look.x + motion.x).rem_euclid(360.0);
+            self.camera_look.y = (self.camera_look.y - motion.y).clamp(-89.99, 89.99);
 
-        let yaw = self.camera_look.x.to_radians();
-        let pitch = self.camera_look.y.to_radians();
+            let yaw = self.camera_look.x.to_radians();
+            let pitch = self.camera_look.y.to_radians();
 
-        self.camera_front = Vec3::new(0.0, 0.0, 1.0).rotate_x(-pitch).rotate_y(-yaw);
+            self.camera_front = Vec3::new(0.0, 0.0, 1.0).rotate_x(-pitch).rotate_y(-yaw);
+        }
+    }
+
+    pub fn mouse_pos(&mut self, pos: (f64, f64)) {
+        self.imgui.io(|io| {
+            io.add_mouse_pos_event([pos.0 as f32, pos.1 as f32]);
+        });
     }
 }

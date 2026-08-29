@@ -13,6 +13,7 @@ use std::cell::Cell;
 use std::collections::HashSet;
 use anyhow::{anyhow, Result};
 use smallvec::{smallvec, SmallVec};
+use smol_str::SmolStr;
 use vulkanalia::{vk, Entry, Instance};
 use vulkanalia::loader::{LibloadingLoader, LIBRARY};
 use vulkanalia::vk::{EntryV1_0, ExtDebugUtilsExtensionInstanceCommands, HasBuilder, InstanceV1_0};
@@ -20,7 +21,7 @@ use winit::dpi::LogicalSize;
 use winit::event::{DeviceEvent, Event, WindowEvent};
 use winit::event_loop::EventLoop;
 use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
-use winit::window::{Window, WindowBuilder};
+use winit::window::{CursorGrabMode, Fullscreen, Window, WindowBuilder};
 use crate::application::Application;
 
 fn create_instance(window: &Window, entry: &Entry) -> Result<(Instance, Option<vk::DebugUtilsMessengerEXT>)> {
@@ -178,7 +179,24 @@ fn main() -> Result<()> {
                     application.resize(&app.get_swapchain_context()).unwrap();
                 },
                 WindowEvent::KeyboardInput { event, .. } => {
-                    application.key(event.physical_key, event.state);
+                    if let Some(grab) = application.key(
+                        event.physical_key, event.state, event.text.map(SmolStr::new)) {
+                        if grab {
+                            if let Err(_) = window.set_cursor_grab(CursorGrabMode::Locked) {
+                                let _ = window.set_cursor_grab(CursorGrabMode::Confined);
+                            }
+                            window.set_cursor_visible(false);
+                        } else {
+                            window.set_cursor_grab(CursorGrabMode::None).unwrap();
+                            window.set_cursor_visible(true);
+                        }
+                    }
+                },
+                WindowEvent::MouseInput { button, state, .. } => {
+                    application.mouse_click(button, state);
+                },
+                WindowEvent::CursorMoved { position, .. } => {
+                    application.mouse_pos((position.x, position.y));
                 },
                 _ => {},
             },

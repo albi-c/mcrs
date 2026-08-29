@@ -756,6 +756,10 @@ impl<'a> Texture<'a> {
         (self.dimensions.0, self.dimensions.1)
     }
 
+    pub fn format(&self) -> Format {
+        self.format
+    }
+
     fn view_type(ty: TextureType) -> vk::ImageViewType {
         match ty {
             TextureType::Tex1D => vk::ImageViewType::_1D,
@@ -1030,8 +1034,9 @@ impl<'a> CommandBuffer<'a> {
     pub fn copy(&mut self, dst: DevicePointer, src: DevicePointer) {
         todo!()
     }
-    pub fn copy_to_texture_rl(&mut self, src: DevicePointer, tex: &Texture<'_>, row_length: u32) {
-        let (buffer, offset) = self.gpu.device_addr_to_buffer_offset(src)
+    pub fn copy_to_texture_rl_at(&mut self, src: DevicePointer, tex: &Texture<'_>, row_length: u32,
+                                 offset: (i32, i32, i32), extent: (u32, u32, u32)) {
+        let (buffer, buffer_offset) = self.gpu.device_addr_to_buffer_offset(src)
             .expect("invalid device pointer");
         let img_subresource = vk::ImageSubresourceLayers::builder()
             .aspect_mask(tex.aspect)
@@ -1039,14 +1044,17 @@ impl<'a> CommandBuffer<'a> {
             .base_array_layer(0)
             .layer_count(1);
         let img_copy = vk::BufferImageCopy::builder()
-            .buffer_offset(offset)
+            .buffer_offset(buffer_offset)
             .buffer_row_length(row_length)
             .buffer_image_height(tex.dimensions.1)
-            .image_offset(vk::Offset3D::default())
-            .image_extent(vk::Extent3D { width: tex.dimensions.0, height: tex.dimensions.1, depth: tex.dimensions.2 })
+            .image_offset(vk::Offset3D { x: offset.0, y: offset.1, z: offset.2 })
+            .image_extent(vk::Extent3D { width: extent.0, height: extent.1, depth: extent.2 })
             .image_subresource(img_subresource);
         unsafe { self.gpu.device.cmd_copy_buffer_to_image(
             self.buffer, buffer, tex.image, vk::ImageLayout::GENERAL, &[img_copy]) };
+    }
+    pub fn copy_to_texture_rl(&mut self, src: DevicePointer, tex: &Texture<'_>, row_length: u32) {
+        self.copy_to_texture_rl_at(src, tex, row_length, (0, 0, 0), tex.dimensions());
     }
     pub fn copy_to_texture(&mut self, src: DevicePointer, tex: &Texture<'_>) {
         self.copy_to_texture_rl(src, tex, tex.dimensions.0);
@@ -1121,6 +1129,29 @@ impl<'a> CommandBuffer<'a> {
     }
     pub fn copy_from_texture(&mut self, dst: DevicePointer, tex: &Texture<'_>) {
         todo!()
+    }
+    pub fn copy_texture_to_texture(&mut self, src: &Texture<'_>, dst: &Texture<'_>,
+                                   regions: impl IntoIterator<Item = ((i32, i32, i32), (i32, i32, i32), (u32, u32, u32))>) {
+        assert_eq!(src.format, dst.format, "source and destination texture formats must match");
+        let regions = regions.into_iter().map(|(offset_src, offset_dst, extent)| {
+            vk::ImageCopy2::builder()
+                .src_offset(vk::Offset3D { x: offset_src.0, y: offset_src.1, z: offset_src.2 })
+                .dst_offset(vk::Offset3D { x: offset_dst.0, y: offset_dst.1, z: offset_dst.2 })
+                .extent(vk::Extent3D { width: extent.0, height: extent.1, depth: extent.2 })
+                .src_subresource(vk::ImageSubresourceLayers::builder()
+                    .aspect_mask(src.aspect)
+                    .layer_count(1))
+                .dst_subresource(vk::ImageSubresourceLayers::builder()
+                    .aspect_mask(dst.aspect)
+                    .layer_count(1))
+        }).collect::<SmallVec<[vk::ImageCopy2Builder; 4]>>();
+        let info = vk::CopyImageInfo2::builder()
+            .src_image(src.image)
+            .src_image_layout(vk::ImageLayout::GENERAL)
+            .dst_image(dst.image)
+            .dst_image_layout(vk::ImageLayout::GENERAL)
+            .regions(&regions);
+        unsafe { self.gpu.device.cmd_copy_image2(self.buffer, &info) };
     }
 
     pub fn set_descriptor_heap(&mut self, textures: Option<&DescriptorHeap<'_>>,

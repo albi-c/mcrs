@@ -60,7 +60,7 @@ impl<'a> Imgui<'a> {
             context: RefCell::new(context),
             consumer,
             shaders,
-            textures: RefCell::new(Vec::from_fn(16, |_| None).into_boxed_slice()),
+            textures: RefCell::new(Vec::from_fn(1, |_| None).into_boxed_slice()),
             texture_offest,
         })
     }
@@ -80,18 +80,20 @@ impl<'a> Imgui<'a> {
         });
     }
 
-    pub fn render(&self, cmd_buf: &mut gpu::CommandBuffer<'_>, arena: &gpu::Arena<'_>,
-                  screen_size: (u32, u32), color_target: gpu::Target<'_>,
-                  tex_descriptors: &mut gpu::DescriptorHeap<'_>) -> Result<()> {
+    pub fn render<'b>(&self, cmd_buf: &mut gpu::CommandBuffer<'b>, arena: &gpu::Arena<'_>,
+                      screen_size: (u32, u32), color_target: gpu::Target<'_>,
+                      tex_descriptors: &mut gpu::DescriptorHeap<'_>) -> Result<()> where 'a: 'b {
         let mut context = self.context.borrow_mut();
 
         let pending = context.render(&self.consumer);
         let mut feedback = vec![];
         for request in pending.texture_requests() {
+            // TODO: do not unwrap_or(0) when subtraction underflows, this only works because texture count is limited to 1
             let req_tex: usize = match request.texture() {
-                SnapshotTextureId::User(id) => id.context_id().get().get() - self.texture_offest as u64,
-                SnapshotTextureId::FontAtlas { context, .. } => context.get().get() - self.texture_offest as u64,
-            }.try_into().expect("invalid texture id");
+                SnapshotTextureId::User(id) => id.context_id(),
+                SnapshotTextureId::FontAtlas { context, .. } => context,
+            }.get().get().checked_sub(self.texture_offest as u64).unwrap_or(0)
+                .try_into().expect("invalid texture id");
 
             feedback.push(match request.operation() {
                 TextureOp::Create { format, width, height, row_pitch, pixels } => {
@@ -117,29 +119,89 @@ impl<'a> Imgui<'a> {
                             TextureFormat::Alpha8 => 1,
                         };
                         let data = arena.alloc_data(pixels)?;
-                        cmd_buf.copy_to_texture_rl(data.device(), &texture, *row_pitch as u32 / components);
+                        cmd_buf.copy_to_texture_rl(
+                            data.device(), &texture, *row_pitch as u32 / components);
                         cmd_buf.barrier(
-                            gpu::Stage::AllTransfer, gpu::Stage::PixelShader, gpu::HazardFlags::empty());
+                            gpu::Stage::AllTransfer, gpu::Stage::PixelShader | gpu::Stage::AllTransfer,
+                            gpu::HazardFlags::empty());
                         texture.view_descriptor(&mut tex_descriptors[idx as usize])?;
-
-                        println!("TextureOp::Create - id {idx}, {width}x{height}, {format:?}");
 
                         tex.replace(texture);
 
                         break;
                     }
                     if idx == 0 {
-                        request.retry()
+                        panic!("imgui out of textures")
                     } else {
                         request.uploaded(TextureId::new(idx))?
                     }
                 },
                 TextureOp::Update { format, width, height, rects } => {
-                    println!("TextureOp::Update for id {req_tex} - {width}x{height}, {} rects, {format:?}", rects.len());
-                    request.retry()
+                    let width = *width;
+                    let height = *height;
+
+                    let mut textures = self.textures.borrow_mut();
+                    let tex = textures[req_tex].as_ref()
+                        .expect("imgui texture update refers to non existing texture");
+
+                    let gpu_format = match *format {
+                        TextureFormat::RGBA32 => gpu::Format::RGBA8UNorm,
+                        TextureFormat::Alpha8 => gpu::Format::A8UNorm,
+                    };
+                    assert_eq!(gpu_format, tex.format(), "imgui texture cannot change format");
+
+                    let (tex, barrier) = if (width, height) != tex.dimensions2() {
+                        let (old_width, old_height) = tex.dimensions2();
+                        let new_tex = self.gpu.create_texture(gpu::TextureDesc {
+                            ty: gpu::TextureType::Tex2D,
+                            dimensions: (width, height, 1),
+                            format: gpu_format,
+                            usage: TextureUsageFlags::Sampled,
+                            ..Default::default()
+                        }, cmd_buf)?;
+                        cmd_buf.copy_texture_to_texture(
+                            tex, &new_tex,
+                            [(
+                                (0, 0, 0), (0, 0, 0),
+                                (width.min(old_width), height.min(old_height), 1),
+                            )]);
+
+                        cmd_buf.barrier(
+                            gpu::Stage::AllTransfer, gpu::Stage::AllTransfer, gpu::HazardFlags::empty());
+
+                        let old_tex = textures[req_tex].replace(new_tex);
+                        // TODO: proper retirement
+                        cmd_buf.give_ownership(old_tex);
+
+                        let new_tex = textures[req_tex].as_ref().unwrap();
+
+                        (new_tex, true)
+                    } else {
+                        (tex, false)
+                    };
+
+                    let components = match *format {
+                        TextureFormat::RGBA32 => 4,
+                        TextureFormat::Alpha8 => 1,
+                    };
+                    for rect in rects {
+                        let data = arena.alloc_data(&rect.data)?;
+                        cmd_buf.copy_to_texture_rl_at(
+                            data.device(), tex, rect.row_pitch as u32 / components,
+                            (rect.rect.x as i32, rect.rect.y as i32, 0),
+                            (rect.rect.w as u32, rect.rect.h as u32, 1));
+                    }
+                    if barrier || !rects.is_empty() {
+                        cmd_buf.barrier(
+                            gpu::Stage::AllTransfer, gpu::Stage::PixelShader, gpu::HazardFlags::empty());
+                    }
+
+                    request.uploaded(TextureId::new(req_tex as u64 + self.texture_offest as u64))?
                 },
                 TextureOp::Destroy => {
-                    println!("TextureOp::Destroy for id {}", req_tex);
+                    // TODO: proper retirement
+                    cmd_buf.give_ownership(self.textures.borrow_mut()[req_tex].take());
+
                     request.destroyed()?
                 },
             });
@@ -152,7 +214,7 @@ impl<'a> Imgui<'a> {
 
         let mut vertices = arena.alloc::<Vertex>(draw_data.total_idx_count())?;
         let mut vertex_count = 0;
-        let mut sampler_nearest = true;
+        let mut sampler_nearest = false;
 
         for draw_list in draw_data.draw_lists() {
             let index_buffer = draw_list.idx_buffer();
