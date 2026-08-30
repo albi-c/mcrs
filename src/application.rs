@@ -11,7 +11,6 @@ use bytemuck::{Pod, Zeroable};
 use glam::{IVec3, Mat4, Vec2, Vec3, Vec3A, Vec4, Vec4Swizzles};
 use half::f16;
 use image::{EncodableLayout, ImageReader};
-use smol_str::SmolStr;
 use winit::event::{ElementState, MouseButton};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use gpu::{MemoryAllocation, MemoryAllocator};
@@ -955,10 +954,10 @@ impl<'a> Application<'a> {
         Ok(())
     }
 
-    pub fn key(&mut self, key: PhysicalKey, state: ElementState, text: Option<SmolStr>) -> Option<bool> {
+    pub fn key(&mut self, key: PhysicalKey, state: ElementState, text: Option<&str>) -> Option<bool> {
         if state == ElementState::Pressed && let Some(text) = text {
             self.imgui.io(|io| {
-                io.add_input_characters_utf8(&text);
+                io.add_input_characters_utf8(text);
             });
         }
 
@@ -1014,6 +1013,6 @@ impl<'a> Application<'a> {
     }
 
     pub fn scale_factor(&mut self, scale: f64) {
-        //
+        self.imgui.scale(scale as f32);
     }
 }

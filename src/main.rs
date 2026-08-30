@@ -13,7 +13,6 @@ use std::cell::Cell;
 use std::collections::HashSet;
 use anyhow::{anyhow, Result};
 use smallvec::{smallvec, SmallVec};
-use smol_str::SmolStr;
 use vulkanalia::{vk, Entry, Instance};
 use vulkanalia::loader::{LibloadingLoader, LIBRARY};
 use vulkanalia::vk::{EntryV1_0, ExtDebugUtilsExtensionInstanceCommands, HasBuilder, InstanceV1_0};
@@ -181,7 +180,7 @@ fn main() -> Result<()> {
                 },
                 WindowEvent::KeyboardInput { event, .. } => {
                     if let Some(grab) = application.key(
-                        event.physical_key, event.state, event.text.map(SmolStr::new)) {
+                        event.physical_key, event.state, event.text.as_ref().map(|text| text.as_ref())) {
                         if grab {
                             if let Err(_) = window.set_cursor_grab(CursorGrabMode::Locked) {
                                 let _ = window.set_cursor_grab(CursorGrabMode::Confined);
