@@ -10,11 +10,11 @@ members = ["gpu", "macros"]
 [workspace.dependencies]
 bytemuck = "1.25.2"
 vulkanalia = "0.34.0"
-anyhow = "1.0.100"
-log = "0.4.29"
+anyhow = "1.0.104"
+log = "0.4.34"
 pretty_env_logger = "0.5.0"
-glam = { version = "0.33.5", features = ["bytemuck", "serde"] }
-bitflags = "2.10.0"
+glam = { version = "0.33.6", features = ["bytemuck", "serde"] }
+bitflags = "2.13.1"
 smallvec = { version = "1.15.2", features = ["serde", "const_generics"] }
 
 [features]
@@ -32,10 +32,10 @@ pretty_env_logger = { workspace = true }
 glam = { workspace = true }
 bytemuck = { workspace = true, version = "1.0.0", features = ["const_zeroed"] }
 bitflags = { workspace = true }
-image = "0.25.9"
+image = "0.25.10"
 lz4_flex = "0.14.0"
 gltf = { version = "1.4.1", features = ["utils"] }
-itertools = "0.14.0"
+itertools = "0.15.0"
 half = { version = "2.7.1", features = ["bytemuck"] }
 meshopt = "0.6.2"
 shaderc = { version = "0.10.1", features = ["build-from-source", "prefer-static-linking"] }
@@ -52,4 +52,4 @@ lazy_static = "1.5.0"
 rand = "0.10.2"
 bevy_ecs = "0.19.1"
 noise = "0.9.0"
-#boxddd = { version = "0.4.0", features = ["glam", "serde"] }
+boxddd = { version = "0.4.0", features = ["glam", "serde"] }

@@ -7,6 +7,5 @@ edition = "2024"
 proc-macro = true
 
 [dependencies]
-syn = "2.0.112"
-quote = "1.0.42"
-proc-macro2 = "1.0.104"
+syn = "3.0.4"
+quote = "1.0.47"
