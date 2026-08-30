@@ -11,7 +11,8 @@ layout(set = 1, binding = 0) uniform writeonly image2D textures_rw[];
 layout(set = 2, binding = 0) uniform sampler samplers[];
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer FragDataTexture {
-    uint texture;
+    uint baseTexture;
+    uint overlayTexture;
 };
 
 layout(std430, push_constant) uniform Data {
@@ -20,6 +21,7 @@ layout(std430, push_constant) uniform Data {
 } data;
 
 void main() {
-    vec4 color = texture(sampler2D(textures[nonuniformEXT(data.frag.texture)], samplers[0]), inUv);
-    outColor = vec4(color.rgb, 1.0);
+    vec4 color = texture(sampler2D(textures[nonuniformEXT(data.frag.baseTexture)], samplers[1]), inUv);
+    vec4 overlay = texture(sampler2D(textures[nonuniformEXT(data.frag.overlayTexture)], samplers[0]), inUv);
+    outColor = mix(vec4(color.rgb, 1.0), vec4(overlay.rgb, 1.0), overlay.a);
 }

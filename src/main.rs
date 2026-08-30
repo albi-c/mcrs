@@ -164,6 +164,7 @@ fn main() -> Result<()> {
 
     let app = App::create(&window)?;
     let mut application = Application::new(&app.gpu, &app.get_swapchain_context())?;
+    application.scale_factor(window.scale_factor());
     event_loop.run_on_demand(|event, target| {
         match event {
             Event::AboutToWait => window.request_redraw(),
@@ -197,6 +198,9 @@ fn main() -> Result<()> {
                 },
                 WindowEvent::CursorMoved { position, .. } => {
                     application.mouse_pos((position.x, position.y));
+                },
+                WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                    application.scale_factor(scale_factor);
                 },
                 _ => {},
             },

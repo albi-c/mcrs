@@ -43,8 +43,6 @@ impl<'a> Imgui<'a> {
         let flags = context.io().backend_flags()
             | BackendFlags::RENDERER_HAS_TEXTURES | BackendFlags::RENDERER_HAS_VTX_OFFSET;
         context.io_mut().set_backend_flags(flags);
-        context.style_mut().scale_all_sizes(1.5);
-        context.style_mut().set_font_scale_dpi(1.5);
 
         let spirv_vert = load_shader_spirv(
             "shaders/vert_imgui.glsl", gpu::ShaderStage::Vertex)?;
@@ -65,8 +63,19 @@ impl<'a> Imgui<'a> {
         })
     }
 
+    pub fn scale(&self, scale: f32) {
+        self.style(|style| {
+            style.scale_all_sizes(scale);
+            style.set_font_scale_dpi(scale);
+        });
+    }
+
     pub fn io<R>(&self, func: impl FnOnce(&mut dear_imgui_rs::Io) -> R) -> R {
         func(self.context.borrow_mut().io_mut())
+    }
+
+    pub fn style<R>(&self, func: impl FnOnce(&mut dear_imgui_rs::Style) -> R) -> R {
+        func(self.context.borrow_mut().style_mut())
     }
 
     pub fn frame<R>(&self, func: impl FnOnce(&dear_imgui_rs::Ui) -> R) -> R {
@@ -214,7 +223,7 @@ impl<'a> Imgui<'a> {
 
         let mut vertices = arena.alloc::<Vertex>(draw_data.total_idx_count())?;
         let mut vertex_count = 0;
-        let mut sampler_nearest = false;
+        let mut sampler_nearest = true;
 
         for draw_list in draw_data.draw_lists() {
             let index_buffer = draw_list.idx_buffer();
@@ -240,7 +249,7 @@ impl<'a> Imgui<'a> {
                             let idx = index_buffer[i] as usize + cmd_params.vtx_offset;
                             let vert = vertex_buffer[idx];
                             let vert = Vertex {
-                                pos: Vec2::from_array(vert.pos),
+                                pos: Vec2::from_array(vert.pos) * 2.0,
                                 uv: Vec2::from_array(vert.uv),
                                 color: vert.col,
                                 texture,

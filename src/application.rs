@@ -151,6 +151,10 @@ fn load_image(path: impl AsRef<Path>, gpu: &gpu::Gpu) -> Result<(u32, u32, gpu::
         "image_cache/{:016x}_{}", hash(path.as_ref()),
         path.as_ref().file_name()
             .expect("path has no file name").to_string_lossy());
+
+    if !Path::new("image_cache").exists() {
+        fs::create_dir("image_cache")?;
+    }
     if fs::exists(&cache_path)? {
         let mut file = fs::File::open(cache_path)?;
         let mut header = [0u32; 2];
@@ -283,6 +287,7 @@ pub fn load_shader(path: impl AsRef<Path>, stage: gpu::ShaderStage, gpu: &gpu::G
 struct WindowSizedTextures<'a> {
     pub depth_buffer: gpu::Texture<'a>,
     pub post_color: gpu::Texture<'a>,
+    pub imgui_x2: gpu::Texture<'a>,
 }
 
 struct Shaders<'a> {
@@ -431,7 +436,7 @@ impl<'a> Application<'a> {
 
         let gltf = load_gltf_cached(
             "models/Sponza_gltf/glTF/Sponza.gltf", "models/sponza_gltf.cache",
-            gpu, &mut tex_descriptors, 2)?;
+            gpu, &mut tex_descriptors, 16)?;
 
         let bl_as = create_bottom_level_as(
             gpu, &queue, &gltf.scenes[0], Vec3::new(1.0, -1.0, 1.0))?;
@@ -590,7 +595,7 @@ impl<'a> Application<'a> {
                 .collect::<Result<_>>()?,
             next_frame: 1,
             last_time: None,
-            imgui: Imgui::new(gpu, 512)?,
+            imgui: Imgui::new(gpu, 1024)?,
 
             textures,
             tex_descriptors,
@@ -622,12 +627,12 @@ impl<'a> Application<'a> {
     }
 
     fn create_tex<'b>(gpu: &'b gpu::Gpu, ctx: &dyn gpu::SwapchainContext,
-                      cmd_buf: &mut gpu::CommandBuffer<'_>, format: gpu::Format,
+                      cmd_buf: &mut gpu::CommandBuffer<'_>, format: gpu::Format, size_shl: u32,
                       usage: gpu::TextureUsageFlags) -> Result<gpu::Texture<'b>> {
         let dims = ctx.get_window_size();
         gpu.create_texture(gpu::TextureDesc {
             ty: gpu::TextureType::Tex2D,
-            dimensions: (dims.0, dims.1, 1),
+            dimensions: (dims.0 << size_shl, dims.1 << size_shl, 1),
             format,
             usage,
             ..Default::default()
@@ -638,11 +643,15 @@ impl<'a> Application<'a> {
                                cmd_buf: &mut gpu::CommandBuffer<'_>) -> Result<WindowSizedTextures<'b>> {
         Ok(WindowSizedTextures {
             depth_buffer: Self::create_tex(
-                gpu, ctx, cmd_buf, gpu::Format::Depth32Float,
+                gpu, ctx, cmd_buf, gpu::Format::Depth32Float, 0,
                 gpu::TextureUsageFlags::DepthStencilAttachment,
             )?,
             post_color: Self::create_tex(
-                gpu, ctx, cmd_buf, gpu::Format::RGBA8UNorm,
+                gpu, ctx, cmd_buf, gpu::Format::RGBA8UNorm, 0,
+                gpu::TextureUsageFlags::Sampled | gpu::TextureUsageFlags::ColorAttachment,
+            )?,
+            imgui_x2: Self::create_tex(
+                gpu, ctx, cmd_buf, gpu::Format::RGBA8UNorm, 1,
                 gpu::TextureUsageFlags::Sampled | gpu::TextureUsageFlags::ColorAttachment,
             )?,
         })
@@ -729,6 +738,7 @@ impl<'a> Application<'a> {
 
         self.textures.post_color.view_descriptor(&mut self.tex_descriptors[0])?;
         self.particle_texture.view_descriptor(&mut self.tex_descriptors[1])?;
+        self.textures.imgui_x2.view_descriptor(&mut self.tex_descriptors[2])?;
 
         let arena = &self.frame_arenas[self.get_frame_area_index()];
         arena.reset();
@@ -889,17 +899,31 @@ impl<'a> Application<'a> {
 
         command_buffer.end_render_pass();
 
+        let imgui_target = gpu::Target {
+            view: self.textures.imgui_x2.view()?,
+            load_op: gpu::Load::Clear,
+            clear_value: gpu::ClearValue::Color([0.0, 0.0, 0.0, 0.0]),
+            ..Default::default()
+        };
+        self.imgui.start_frame(ctx.get_window_size(), dt);
+        self.imgui.frame(|ui| {
+            ui.input_text("text", &mut self.text_field).build();
+        });
+        self.imgui.render(&mut command_buffer, arena, ctx.get_window_size(),
+                          imgui_target, &mut self.tex_descriptors)?;
+
         command_buffer.barrier(gpu::Stage::PixelShader, gpu::Stage::PixelShader, gpu::HazardFlags::empty());
 
         #[repr(C)]
         #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-        struct PostPixelData(u32);
+        struct PostPixelData(u32, u32);
         let post_pixel_data = arena.alloc_data(&[PostPixelData(
             0,
+            2,
         )])?;
         let post_pass_desc = gpu::RenderPassDesc {
             cull: gpu::Cull::None,
-            color_targets: &[swapchain_target.clone()],
+            color_targets: &[swapchain_target],
             ..Default::default()
         };
         command_buffer.begin_render_pass(&post_pass_desc);
@@ -910,15 +934,6 @@ impl<'a> Application<'a> {
             (1, 1, 1));
 
         command_buffer.end_render_pass();
-
-        swapchain_target.load_op = gpu::Load::Load;
-        self.imgui.start_frame(ctx.get_window_size(), dt);
-        self.imgui.frame(|ui| {
-            ui.label_text("fps", (1.0 / dt).to_string());
-            ui.input_text("text", &mut self.text_field).build();
-        });
-        self.imgui.render(&mut command_buffer, arena, ctx.get_window_size(),
-                          swapchain_target, &mut self.tex_descriptors)?;
 
         self.queue.submit(command_buffer, &self.frame_semaphore, self.next_frame)?;
         self.gpu.swapchain_present(&self.frame_semaphore, self.next_frame)?;
@@ -996,5 +1011,9 @@ impl<'a> Application<'a> {
         self.imgui.io(|io| {
             io.add_mouse_pos_event([pos.0 as f32, pos.1 as f32]);
         });
+    }
+
+    pub fn scale_factor(&mut self, scale: f64) {
+        //
     }
 }
