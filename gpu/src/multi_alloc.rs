@@ -5,7 +5,6 @@ use std::ops::{Index, IndexMut};
 use bytemuck::Pod;
 use crate::{Allocation, DevicePointer, Gpu, Memory, MemoryAllocation};
 
-// TODO: derive macro, instead of Tuples (associated type) have structs
 pub trait MultiType {
     const N: usize;
     const SIZES: Self::Array<usize>;
@@ -78,31 +77,6 @@ multi_type_for_tuple!(13; 0, A, 1, B, 2, C, 3, D, 4, E, 5, F, 6, G, 7, H, 8, I, 
 multi_type_for_tuple!(14; 0, A, 1, B, 2, C, 3, D, 4, E, 5, F, 6, G, 7, H, 8, I, 9, J, 10, K, 11, L, 12, M, 13, N);
 multi_type_for_tuple!(15; 0, A, 1, B, 2, C, 3, D, 4, E, 5, F, 6, G, 7, H, 8, I, 9, J, 10, K, 11, L, 12, M, 13, N, 14, O);
 multi_type_for_tuple!(16; 0, A, 1, B, 2, C, 3, D, 4, E, 5, F, 6, G, 7, H, 8, I, 9, J, 10, K, 11, L, 12, M, 13, N, 14, O, 15, P);
-
-struct MultiAllocationContainer<'a> {
-    ma: Allocation<'a, u8>,
-    pub part1: MultiAllocationPart<'a, usize>,
-    pub part2: MultiAllocationPart<'a, usize>,
-}
-
-impl<'a> MultiAllocationContainer<'a> {
-    pub fn new(&self, gpu: &'a Gpu, lengths: [usize; 2]) -> anyhow::Result<Self> {
-        let ma = MultiAllocation::<(usize, usize)>::new(gpu, lengths)?;
-        let part1 = {
-            let MultiAllocationPart { device, host, count, .. } = ma.part::<0, usize>();
-            MultiAllocationPart { device, host, count, pd: PhantomData }
-        };
-        let part2 = {
-            let MultiAllocationPart { device, host, count, .. } = ma.part::<1, usize>();
-            MultiAllocationPart { device, host, count, pd: PhantomData }
-        };
-        Ok(Self {
-            ma: ma.allocation,
-            part1,
-            part2,
-        })
-    }
-}
 
 pub struct MultiAllocationPart<'a, T: Pod> {
     device: DevicePointer,

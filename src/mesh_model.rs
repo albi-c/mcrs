@@ -3,7 +3,6 @@ use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2, Vec3, Vec3A, Vec4};
 use half::f16;
-use itertools::Itertools;
 use smallvec::SmallVec;
 use gpu::{MemoryAllocation, MemoryAllocator};
 use macros::multi_allocation;

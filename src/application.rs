@@ -442,7 +442,7 @@ impl<'a> Application<'a> {
         let tl_as = create_top_level_as(gpu, &queue, &bl_as)?;
         tl_as.descriptor(&mut accel_struct_descriptors[0]);
 
-        // TODO: detect proper imgui scaling, proper imgui texture retirement
+        // TODO: proper imgui texture retirement
         // TODO: extract some glsl functions like uint to vec4 unpacking to common.glsl
         // TODO: backend rewrite - !! typed device pointers and custom push constant formats
         // TODO: hi-z occlusion culling

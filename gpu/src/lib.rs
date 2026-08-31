@@ -6,7 +6,6 @@
 #![feature(const_index)]
 #![expect(incomplete_features)]
 #![feature(inherent_associated_types)]
-#![feature(iter_array_chunks)]
 
 mod vulkan;
 mod arena;

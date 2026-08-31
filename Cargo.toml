@@ -53,3 +53,4 @@ rand = "0.10.2"
 bevy_ecs = "0.19.1"
 noise = "0.9.0"
 boxddd = { version = "0.4.0", features = ["glam", "serde"] }
+russimp-ng = { version = "3.2.7", features = ["static-link"] }
