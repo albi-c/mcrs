@@ -437,6 +437,8 @@ impl<'a> Application<'a> {
             "models/Sponza_gltf/glTF/Sponza.gltf", "models/sponza_gltf.cache",
             gpu, &mut tex_descriptors, 16)?;
 
+        let _ = crate::scene::Scene::load("models/Sponza_gltf/glTF/Sponza.gltf")?;
+
         let bl_as = create_bottom_level_as(
             gpu, &queue, &gltf.scenes[0], Vec3::new(1.0, -1.0, 1.0))?;
         let tl_as = create_top_level_as(gpu, &queue, &bl_as)?;

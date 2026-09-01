@@ -1,11 +1,13 @@
 #![feature(map_try_insert)]
 #![feature(exact_div)]
 #![feature(vec_from_fn)]
+#![feature(seek_stream_len)]
 
 mod application;
 mod gltf;
 mod mesh_model;
 mod imgui;
+mod scene;
 
 use std::cell::Cell;
 use std::collections::HashSet;
