@@ -1163,8 +1163,10 @@ impl<'a> CommandBuffer<'a> {
             accel_structs.map(|heap| heap.device()).unwrap_or(DevicePointer::null()),
         ];
         let mut infos = [vk::DescriptorBufferBindingInfoEXT::default(); 4];
+        let mut buffer_indices = [0; 4];
+        let buffer_offsets = [0; 4];
         let mut index = 0;
-        for &pointer in &pointers {
+        for (i, pointer) in pointers.iter().copied().enumerate() {
             if pointer.is_null() {
                 continue;
             }
@@ -1175,19 +1177,15 @@ impl<'a> CommandBuffer<'a> {
                     | vk::BufferUsageFlags::STORAGE_BUFFER
                     | vk::BufferUsageFlags::TRANSFER_SRC)
                 .build();
+            buffer_indices[i] = index as u32;
             index += 1;
         }
         unsafe { self.gpu.device.cmd_bind_descriptor_buffers_ext(self.buffer, &infos[..index]) };
 
-        let mut index = 0;
-        for (i, &pointer) in pointers.iter().enumerate() {
-            if pointer.is_null() {
-                continue;
-            }
+        for bind_point in [vk::PipelineBindPoint::GRAPHICS, vk::PipelineBindPoint::COMPUTE] {
             unsafe { self.gpu.device.cmd_set_descriptor_buffer_offsets_ext(
-                self.buffer, vk::PipelineBindPoint::GRAPHICS, self.gpu.pipeline_layout.layout,
-                i as u32, &[index], &[0]) };
-            index += 1;
+                self.buffer, bind_point, self.gpu.pipeline_layout.layout,
+                0, &buffer_indices, &buffer_offsets) };
         }
     }
 
