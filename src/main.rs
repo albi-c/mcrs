@@ -38,12 +38,9 @@ fn create_instance(window: &Window, entry: &Entry) -> Result<(Instance, Option<v
 
     let flags = if gpu::need_portability_ext(entry.version()?) {
         log::debug!("enabling compatibility extensions for macos");
-        extensions.push(vk::KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_EXTENSION.name.as_ptr());
         extensions.push(vk::KHR_PORTABILITY_ENUMERATION_EXTENSION.name.as_ptr());
         vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
     } else {
-        extensions.push(vk::KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_EXTENSION.name.as_ptr());
-        extensions.push(vk::KHR_DEVICE_GROUP_CREATION_EXTENSION.name.as_ptr());
         vk::InstanceCreateFlags::empty()
     };
 
